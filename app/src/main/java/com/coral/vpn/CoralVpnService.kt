@@ -9,7 +9,10 @@ import android.net.VpnService
 import android.os.Build
 import android.os.ParcelFileDescriptor
 import kotlinx.coroutines.flow.MutableStateFlow
+import org.json.JSONObject
 import java.io.File
+import java.net.Inet4Address
+import java.net.InetAddress
 
 enum class VpnState { OFF, CONNECTING, ON, ERROR }
 
@@ -46,7 +49,7 @@ class CoralVpnService : VpnService() {
             if (!out.exists()) this.assets.open(name).use { i -> out.outputStream().use { o -> i.copyTo(o) } }
         }
         Diag.log("шаг 2: запуск ядра Xray")
-        val cfg = File(filesDir, "config.json").apply { writeText(config) }
+        val cfg = File(filesDir, "config.json").apply { writeText(resolveServer(config)) }
 
         val bin = File(applicationInfo.nativeLibraryDir, "libxray.so")
         val pb = ProcessBuilder(bin.path, "run", "-c", cfg.path).redirectErrorStream(true)
@@ -55,10 +58,16 @@ class CoralVpnService : VpnService() {
         val proc = pb.start()
         xray = proc
         Thread {
-            proc.inputStream.bufferedReader().forEachLine { line ->
-                message.value = line.take(200)
-                Diag.log("xray: ${line.take(300)}")
-            }
+            var logged = 0
+            runCatching {
+                proc.inputStream.bufferedReader().forEachLine { line ->
+                    if (!line.contains("accepted") && logged < 150) {
+                        message.value = line.take(200)
+                        Diag.log("xray: ${line.take(300)}")
+                        logged++
+                    }
+                }
+            } // при остановке ядра чтение прерывается — это нормально
         }.start()
         Thread.sleep(1000)
         Diag.log("шаг 3: ядро живо=${proc.isAlive}")
@@ -102,6 +111,21 @@ class CoralVpnService : VpnService() {
         Diag.log("шаг 6: туннель запущен, работает=${TProxyService.TProxyIsRunning()}")
         state.value = VpnState.ON
         message.value = "Подключено"
+    }
+
+    /** У Xray на Android нет системного DNS (нет resolv.conf), поэтому подставляем IP сервера сами. */
+    private fun resolveServer(config: String): String {
+        val root = JSONObject(config)
+        val vnext = root.getJSONArray("outbounds").getJSONObject(0)
+            .getJSONObject("settings").getJSONArray("vnext").getJSONObject(0)
+        val host = vnext.getString("address")
+        if (host.any { it.isLetter() }) {
+            val ip = InetAddress.getAllByName(host).filterIsInstance<Inet4Address>().firstOrNull()?.hostAddress
+                ?: error("не удалось определить IP сервера $host")
+            vnext.put("address", ip)
+            Diag.log("сервер $host → $ip")
+        }
+        return root.toString()
     }
 
     private fun fail(e: Throwable) {

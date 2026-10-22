@@ -41,7 +41,9 @@ object XrayConfig {
         }
         if (s.network == "ws") {
             val ws = JSONObject().put("path", s.path.ifEmpty { "/" })
-            if (s.hostHeader.isNotEmpty()) ws.put("headers", JSONObject().put("Host", s.hostHeader))
+            // Host нужен всегда: адрес сервера подменяется на IP, а сайт на домене
+            val hostName = s.hostHeader.ifEmpty { s.sni.ifEmpty { s.host } }
+            ws.put("headers", JSONObject().put("Host", hostName))
             stream.put("wsSettings", ws)
         }
         return JSONObject().put("tag", "proxy").put("protocol", "vless")
