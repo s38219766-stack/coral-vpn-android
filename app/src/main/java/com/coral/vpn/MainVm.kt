@@ -33,8 +33,8 @@ class MainVm(app: Application) : AndroidViewModel(app) {
 
     val loggedIn get() = subUrl.isNotBlank()
 
-    fun setMode(m: RouteMode) { mode = m; prefs.edit().putString("mode", m.name).apply() }
-    fun setAdblock(v: Boolean) { adblock = v; prefs.edit().putBoolean("adblock", v).apply() }
+    fun changeMode(m: RouteMode) { mode = m; prefs.edit().putString("mode", m.name).apply() }
+    fun changeAdblock(v: Boolean) { adblock = v; prefs.edit().putBoolean("adblock", v).apply() }
     fun saveApps(v: Set<String>) { apps = v; prefs.edit().putStringSet("apps", v).apply() }
     fun choose(name: String) { pick = name; prefs.edit().putString("pick", name).apply() }
 

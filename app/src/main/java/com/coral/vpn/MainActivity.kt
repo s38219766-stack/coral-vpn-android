@@ -271,9 +271,9 @@ private fun RouteCard(vm: MainVm) {
     GlassCard {
         Text("Маршрутизация", color = Color.White, fontWeight = FontWeight.Bold)
         Row(Modifier.horizontalScroll(rememberScrollState()), horizontalArrangement = Arrangement.spacedBy(8.dp)) {
-            FilterChip(selected = vm.mode == RouteMode.RU_DIRECT, onClick = { vm.setMode(RouteMode.RU_DIRECT) }, label = { Text("РФ напрямую") })
-            FilterChip(selected = vm.mode == RouteMode.BLOCKED, onClick = { vm.setMode(RouteMode.BLOCKED) }, label = { Text("Только заблокированное") })
-            FilterChip(selected = vm.mode == RouteMode.ALL, onClick = { vm.setMode(RouteMode.ALL) }, label = { Text("Всё") })
+            FilterChip(selected = vm.mode == RouteMode.RU_DIRECT, onClick = { vm.changeMode(RouteMode.RU_DIRECT) }, label = { Text("РФ напрямую") })
+            FilterChip(selected = vm.mode == RouteMode.BLOCKED, onClick = { vm.changeMode(RouteMode.BLOCKED) }, label = { Text("Только заблокированное") })
+            FilterChip(selected = vm.mode == RouteMode.ALL, onClick = { vm.changeMode(RouteMode.ALL) }, label = { Text("Всё") })
         }
         Text(
             when (vm.mode) {
@@ -287,7 +287,7 @@ private fun RouteCard(vm: MainVm) {
                 Text("Блокировать рекламу", color = Color.White)
                 Text("Реклама и трекеры режутся до загрузки", color = Muted, fontSize = 12.sp)
             }
-            Switch(checked = vm.adblock, onCheckedChange = { vm.setAdblock(it) })
+            Switch(checked = vm.adblock, onCheckedChange = { vm.changeAdblock(it) })
         }
         AppsPicker(vm)
     }
