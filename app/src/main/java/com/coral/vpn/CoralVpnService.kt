@@ -61,7 +61,13 @@ class CoralVpnService : VpnService() {
             xray?.destroy(); xray = null
             Diag.log("сервер «$label» не отвечает, пробуем следующий")
         }
-        check(chosen != null) { "ни один сервер не отвечает" }
+        if (chosen == null && configs.isNotEmpty()) {
+            // Сама проверка могла ошибиться — не отказываем, а подключаемся к первому серверу как есть
+            Diag.log("ни одна проверка не прошла — подключаемся к первому серверу без проверки")
+            val ok = runCatching { tryServer(configs[0], assets, verify = false) }.getOrDefault(false)
+            if (ok) chosen = (names.getOrNull(0) ?: "сервер 1") + " (без проверки)"
+        }
+        check(chosen != null) { "не удалось запустить ядро — отправьте журнал разработчику" }
         Diag.log("шаг 3: выбран «$chosen»")
 
         val builder = Builder()
@@ -108,7 +114,7 @@ class CoralVpnService : VpnService() {
     }
 
     /** Запускает ядро с этим конфигом и проверяет, ходит ли трафик через сервер. */
-    private fun tryServer(config: String, assets: File): Boolean {
+    private fun tryServer(config: String, assets: File, verify: Boolean = true): Boolean {
         val cfg = File(filesDir, "config.json").apply { writeText(resolveServer(config)) }
         val bin = File(applicationInfo.nativeLibraryDir, "libxray.so")
         val pb = ProcessBuilder(bin.path, "run", "-c", cfg.path).redirectErrorStream(true)
@@ -125,21 +131,22 @@ class CoralVpnService : VpnService() {
         }.start()
         Thread.sleep(800)
         if (!proc.isAlive) return false
-        return probe()
+        return if (verify) probe() else true
     }
 
-    /** Запрос через локальный SOCKS ядра: 204 значит, сервер работает. */
+    /** Запрос через локальный SOCKS ядра: 204 значит, сервер работает. Только HTTPS — открытый HTTP Android запрещает. */
     private fun probe(): Boolean {
-        repeat(2) {
+        val proxy = java.net.Proxy(java.net.Proxy.Type.SOCKS, java.net.InetSocketAddress("127.0.0.1", XrayConfig.SOCKS_PORT))
+        for (url in listOf("https://cp.cloudflare.com/generate_204", "https://www.gstatic.com/generate_204")) {
             runCatching {
-                val proxy = java.net.Proxy(java.net.Proxy.Type.SOCKS, java.net.InetSocketAddress("127.0.0.1", XrayConfig.SOCKS_PORT))
-                val c = java.net.URL("http://cp.cloudflare.com/generate_204").openConnection(proxy) as java.net.HttpURLConnection
-                c.connectTimeout = 6000; c.readTimeout = 6000
+                val c = java.net.URL(url).openConnection(proxy) as java.net.HttpURLConnection
+                c.connectTimeout = 7000
+                c.readTimeout = 7000
                 val code = c.responseCode
                 c.disconnect()
-                Diag.log("проверка связи: HTTP $code")
+                Diag.log("проверка связи ($url): HTTP $code")
                 if (code == 204) return true
-            }.onFailure { Diag.log("проверка связи: ${it.message}") }
+            }.onFailure { Diag.log("проверка связи ($url): ${it.javaClass.simpleName}: ${it.message}") }
         }
         return false
     }
