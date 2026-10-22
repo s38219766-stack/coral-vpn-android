@@ -118,6 +118,8 @@ private fun Screen(vm: MainVm) {
         }
         AppsPicker(vm)
         ConnectButton(vm)
+        val ctx = LocalContext.current
+        TextButton(onClick = { Diag.share(ctx) }, modifier = Modifier.fillMaxWidth()) { Text("Отправить журнал разработчику") }
     }
 }
 

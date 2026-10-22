@@ -13,6 +13,7 @@
     </queries>
 
     <application
+        android:name=".CoralApp"
         android:allowBackup="false"
         android:extractNativeLibs="true"
         android:icon="@drawable/ic_launcher"

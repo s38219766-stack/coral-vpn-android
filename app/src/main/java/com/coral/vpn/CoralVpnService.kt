@@ -29,6 +29,8 @@ class CoralVpnService : VpnService() {
         if (intent?.action == ACTION_STOP) { shutdown(); return START_NOT_STICKY }
         val config = intent?.getStringExtra(EXTRA_CONFIG) ?: return START_NOT_STICKY
         val apps = intent.getStringArrayExtra(EXTRA_APPS)?.toList().orEmpty()
+        Diag.clear()
+        Diag.log("onStartCommand, приложений в списке: ${apps.size}")
         startForegroundCompat()
         state.value = VpnState.CONNECTING
         message.value = "Подключение…"
@@ -37,24 +39,29 @@ class CoralVpnService : VpnService() {
     }
 
     private fun start(config: String, apps: List<String>) {
+        Diag.log("шаг 1: копирование geoip/geosite")
         val assets = File(filesDir, "xray-assets").apply { mkdirs() }
         for (name in listOf("geoip.dat", "geosite.dat")) {
             val out = File(assets, name)
             if (!out.exists()) this.assets.open(name).use { i -> out.outputStream().use { o -> i.copyTo(o) } }
         }
+        Diag.log("шаг 2: запуск ядра Xray")
         val cfg = File(filesDir, "config.json").apply { writeText(config) }
 
         val bin = File(applicationInfo.nativeLibraryDir, "libxray.so")
         val pb = ProcessBuilder(bin.path, "run", "-c", cfg.path).redirectErrorStream(true)
         pb.environment()["XRAY_LOCATION_ASSET"] = assets.path
+        Diag.log("бинарник: ${bin.path} существует=${bin.exists()} исполняемый=${bin.canExecute()}")
         val proc = pb.start()
         xray = proc
         Thread {
             proc.inputStream.bufferedReader().forEachLine { line ->
                 message.value = line.take(200)
+                Diag.log("xray: ${line.take(300)}")
             }
         }.start()
         Thread.sleep(1000)
+        Diag.log("шаг 3: ядро живо=${proc.isAlive}")
         check(proc.isAlive) { "ядро Xray не запустилось: ${message.value}" }
 
         val builder = Builder()
@@ -68,6 +75,7 @@ class CoralVpnService : VpnService() {
         } else {
             apps.filter { it != packageName }.forEach { runCatching { builder.addAllowedApplication(it) } }
         }
+        Diag.log("шаг 4: создание VPN-интерфейса")
         val fd = builder.establish() ?: error("система не выдала VPN-интерфейс")
         tun = fd
 
@@ -88,12 +96,15 @@ class CoralVpnService : VpnService() {
               log-level: warn
             """.trimIndent()
         )
+        Diag.log("шаг 5: запуск туннеля hev, fd=${fd.fd}")
         TProxyService.TProxyStartService(hev.path, fd.fd)
+        Diag.log("шаг 6: туннель запущен")
         state.value = VpnState.ON
         message.value = "Подключено"
     }
 
     private fun fail(e: Throwable) {
+        Diag.log("ОШИБКА: ${e}")
         message.value = e.message ?: e.toString()
         shutdown()
         state.value = VpnState.ERROR
