@@ -12,7 +12,7 @@ object XrayConfig {
     fun build(s: Server, mode: RouteMode = RouteMode.RU_DIRECT): String {
         val root = JSONObject()
         root.put("log", JSONObject().put("loglevel", "warning"))
-        root.put("dns", JSONObject().put("servers", JSONArray(listOf("1.1.1.1", "8.8.8.8", "localhost"))))
+        root.put("dns", JSONObject().put("servers", JSONArray(listOf("1.1.1.1", "8.8.8.8"))))
         root.put("inbounds", JSONArray().put(
             JSONObject()
                 .put("tag", "socks").put("listen", "127.0.0.1").put("port", SOCKS_PORT).put("protocol", "socks")
