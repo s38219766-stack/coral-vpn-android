@@ -3,13 +3,21 @@ package com.coral.vpn
 import org.json.JSONArray
 import org.json.JSONObject
 
-enum class RouteMode { ALL, RU_DIRECT }
+enum class RouteMode { ALL, RU_DIRECT, BLOCKED }
 
 /** Собирает JSON-конфигурацию Xray для выбранного сервера. */
 object XrayConfig {
     const val SOCKS_PORT = 10808
 
-    fun build(s: Server, mode: RouteMode = RouteMode.RU_DIRECT): String {
+    // Сервисы, которые нужно пускать через VPN в режиме «только заблокированное».
+    // Все названия проверены по geosite.dat из Xray-core v24.12.31.
+    private val BLOCKED = listOf(
+        "geosite:instagram", "geosite:facebook", "geosite:meta", "geosite:twitter", "geosite:youtube",
+        "geosite:discord", "geosite:openai", "geosite:linkedin", "geosite:spotify", "geosite:netflix",
+        "geosite:notion", "geosite:medium", "geosite:signal", "geosite:telegram", "geosite:whatsapp",
+    )
+
+    fun build(s: Server, mode: RouteMode = RouteMode.RU_DIRECT, adblock: Boolean = false): String {
         val root = JSONObject()
         root.put("log", JSONObject().put("loglevel", "warning"))
         root.put("dns", JSONObject().put("servers", JSONArray(listOf("1.1.1.1", "8.8.8.8"))))
@@ -23,7 +31,7 @@ object XrayConfig {
             .put(proxy(s))
             .put(JSONObject().put("tag", "direct").put("protocol", "freedom"))
             .put(JSONObject().put("tag", "block").put("protocol", "blackhole")))
-        root.put("routing", routing(mode))
+        root.put("routing", routing(mode, adblock))
         return root.toString(2)
     }
 
@@ -52,16 +60,25 @@ object XrayConfig {
             .put("streamSettings", stream)
     }
 
-    private fun routing(mode: RouteMode): JSONObject {
+    private fun routing(mode: RouteMode, adblock: Boolean): JSONObject {
         val rules = JSONArray()
+        if (adblock) rules.put(rule("block").put("domain", JSONArray(listOf("geosite:category-ads-all"))))
         // Локальные адреса всегда напрямую
         rules.put(rule("direct").put("ip", JSONArray(listOf("geoip:private"))))
-        if (mode == RouteMode.RU_DIRECT) {
-            // Российские сайты — напрямую, остальное — через VPN
-            rules.put(rule("direct").put("domain", JSONArray(listOf("regexp:\\.ru$", "regexp:\\.su$", "regexp:\\.xn--p1ai$"))))
-            rules.put(rule("direct").put("ip", JSONArray(listOf("geoip:ru"))))
+        when (mode) {
+            RouteMode.RU_DIRECT -> {
+                // Российские сайты — напрямую, остальное — через VPN
+                rules.put(rule("direct").put("domain", JSONArray(listOf("regexp:\\.ru$", "regexp:\\.su$", "regexp:\\.xn--p1ai$"))))
+                rules.put(rule("direct").put("ip", JSONArray(listOf("geoip:ru"))))
+                rules.put(rule("proxy").put("network", "tcp,udp"))
+            }
+            RouteMode.BLOCKED -> {
+                // Через VPN только заблокированные сервисы, всё остальное — напрямую
+                rules.put(rule("proxy").put("domain", JSONArray(BLOCKED)))
+                rules.put(rule("direct").put("network", "tcp,udp"))
+            }
+            RouteMode.ALL -> rules.put(rule("proxy").put("network", "tcp,udp"))
         }
-        rules.put(rule("proxy").put("network", "tcp,udp"))
         return JSONObject().put("domainStrategy", "IPIfNonMatch").put("rules", rules)
     }
 

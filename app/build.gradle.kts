@@ -12,8 +12,8 @@ android {
         applicationId = "com.coral.vpn"
         minSdk = 26
         targetSdk = 34
-        versionCode = 1
-        versionName = "0.2.0"
+        versionCode = (project.findProperty("vc") as String?)?.toInt() ?: 1
+        versionName = "0.3.0"
         ndk { abiFilters += "arm64-v8a" }
     }
     packaging {
@@ -23,6 +23,24 @@ android {
         }
     }
     androidResources { noCompress += "dat" }
+    signingConfigs {
+        create("release") {
+            val path = System.getenv("KEYSTORE_PATH")
+            if (path != null) {
+                storeFile = file(path)
+                storePassword = System.getenv("KEYSTORE_PASS")
+                keyAlias = "coral"
+                keyPassword = System.getenv("KEYSTORE_PASS")
+                storeType = "pkcs12"
+            }
+        }
+    }
+    buildTypes {
+        release {
+            signingConfig = signingConfigs.getByName("release")
+            isMinifyEnabled = false
+        }
+    }
     buildFeatures { compose = true }
     compileOptions {
         sourceCompatibility = JavaVersion.VERSION_17

@@ -19,7 +19,8 @@ enum class VpnState { OFF, CONNECTING, ON, ERROR }
 class CoralVpnService : VpnService() {
     companion object {
         const val ACTION_STOP = "com.coral.vpn.STOP"
-        const val EXTRA_CONFIG = "config"
+        const val EXTRA_CONFIGS = "configs"
+        const val EXTRA_NAMES = "names"
         const val EXTRA_APPS = "apps"
         val state = MutableStateFlow(VpnState.OFF)
         val message = MutableStateFlow("")
@@ -30,54 +31,46 @@ class CoralVpnService : VpnService() {
 
     override fun onStartCommand(intent: Intent?, flags: Int, startId: Int): Int {
         if (intent?.action == ACTION_STOP) { shutdown(); return START_NOT_STICKY }
-        val config = intent?.getStringExtra(EXTRA_CONFIG) ?: return START_NOT_STICKY
+        val configs = intent?.getStringArrayExtra(EXTRA_CONFIGS)?.toList() ?: return START_NOT_STICKY
+        val names = intent.getStringArrayExtra(EXTRA_NAMES)?.toList().orEmpty()
         val apps = intent.getStringArrayExtra(EXTRA_APPS)?.toList().orEmpty()
         Diag.clear()
         Diag.log("onStartCommand, приложений в списке: ${apps.size}")
         startForegroundCompat()
         state.value = VpnState.CONNECTING
         message.value = "Подключение…"
-        Thread { runCatching { start(config, apps) }.onFailure { fail(it) } }.start()
+        Thread { runCatching { start(configs, names, apps) }.onFailure { fail(it) } }.start()
         return START_NOT_STICKY
     }
 
-    private fun start(config: String, apps: List<String>) {
+    private fun start(configs: List<String>, names: List<String>, apps: List<String>) {
         Diag.log("шаг 1: копирование geoip/geosite")
         val assets = File(filesDir, "xray-assets").apply { mkdirs() }
         for (name in listOf("geoip.dat", "geosite.dat")) {
             val out = File(assets, name)
             if (!out.exists()) this.assets.open(name).use { i -> out.outputStream().use { o -> i.copyTo(o) } }
         }
-        Diag.log("шаг 2: запуск ядра Xray")
-        val cfg = File(filesDir, "config.json").apply { writeText(resolveServer(config)) }
-
-        val bin = File(applicationInfo.nativeLibraryDir, "libxray.so")
-        val pb = ProcessBuilder(bin.path, "run", "-c", cfg.path).redirectErrorStream(true)
-        pb.environment()["XRAY_LOCATION_ASSET"] = assets.path
-        Diag.log("бинарник: ${bin.path} существует=${bin.exists()} исполняемый=${bin.canExecute()}")
-        val proc = pb.start()
-        xray = proc
-        Thread {
-            var logged = 0
-            runCatching {
-                proc.inputStream.bufferedReader().forEachLine { line ->
-                    if (!line.contains("accepted") && logged < 150) {
-                        message.value = line.take(200)
-                        Diag.log("xray: ${line.take(300)}")
-                        logged++
-                    }
-                }
-            } // при остановке ядра чтение прерывается — это нормально
-        }.start()
-        Thread.sleep(1000)
-        Diag.log("шаг 3: ядро живо=${proc.isAlive}")
-        check(proc.isAlive) { "ядро Xray не запустилось: ${message.value}" }
+        // Пробуем серверы по очереди, пока один не пропустит трафик
+        var chosen: String? = null
+        for ((i, config) in configs.withIndex()) {
+            val label = names.getOrNull(i) ?: "сервер ${i + 1}"
+            message.value = "Проверка: $label"
+            Diag.log("шаг 2: сервер «$label»")
+            val ok = runCatching { tryServer(config, assets) }.onFailure { Diag.log("ошибка: ${it.message}") }.getOrDefault(false)
+            if (ok) { chosen = label; break }
+            xray?.destroy(); xray = null
+            Diag.log("сервер «$label» не отвечает, пробуем следующий")
+        }
+        check(chosen != null) { "ни один сервер не отвечает" }
+        Diag.log("шаг 3: выбран «$chosen»")
 
         val builder = Builder()
             .setSession("Coral VPN")
             .setMtu(8500)
             .addAddress("198.18.0.1", 32)
             .addRoute("0.0.0.0", 0)
+            .addAddress("fc00::1", 128)
+            .addRoute("::", 0)
             .addDnsServer("1.1.1.1")
         if (apps.isEmpty()) {
             builder.addDisallowedApplication(packageName) // иначе трафик самого Xray зациклится
@@ -94,6 +87,7 @@ class CoralVpnService : VpnService() {
             tunnel:
               mtu: 8500
               ipv4: 198.18.0.1
+              ipv6: 'fc00::1'
             socks5:
               port: ${XrayConfig.SOCKS_PORT}
               address: 127.0.0.1
@@ -110,7 +104,44 @@ class CoralVpnService : VpnService() {
         check(TProxyService.TProxyStartService(hev.path, fd.fd)) { "туннель hev не запустился" }
         Diag.log("шаг 6: туннель запущен, работает=${TProxyService.TProxyIsRunning()}")
         state.value = VpnState.ON
-        message.value = "Подключено"
+        message.value = "Подключено: $chosen"
+    }
+
+    /** Запускает ядро с этим конфигом и проверяет, ходит ли трафик через сервер. */
+    private fun tryServer(config: String, assets: File): Boolean {
+        val cfg = File(filesDir, "config.json").apply { writeText(resolveServer(config)) }
+        val bin = File(applicationInfo.nativeLibraryDir, "libxray.so")
+        val pb = ProcessBuilder(bin.path, "run", "-c", cfg.path).redirectErrorStream(true)
+        pb.environment()["XRAY_LOCATION_ASSET"] = assets.path
+        val proc = pb.start()
+        xray = proc
+        Thread {
+            var logged = 0
+            runCatching {
+                proc.inputStream.bufferedReader().forEachLine { line ->
+                    if (!line.contains("accepted") && logged < 150) { Diag.log("xray: ${line.take(300)}"); logged++ }
+                }
+            }
+        }.start()
+        Thread.sleep(800)
+        if (!proc.isAlive) return false
+        return probe()
+    }
+
+    /** Запрос через локальный SOCKS ядра: 204 значит, сервер работает. */
+    private fun probe(): Boolean {
+        repeat(2) {
+            runCatching {
+                val proxy = java.net.Proxy(java.net.Proxy.Type.SOCKS, java.net.InetSocketAddress("127.0.0.1", XrayConfig.SOCKS_PORT))
+                val c = java.net.URL("http://cp.cloudflare.com/generate_204").openConnection(proxy) as java.net.HttpURLConnection
+                c.connectTimeout = 6000; c.readTimeout = 6000
+                val code = c.responseCode
+                c.disconnect()
+                Diag.log("проверка связи: HTTP $code")
+                if (code == 204) return true
+            }.onFailure { Diag.log("проверка связи: ${it.message}") }
+        }
+        return false
     }
 
     /** У Xray на Android нет системного DNS (нет resolv.conf), поэтому подставляем IP сервера сами. */

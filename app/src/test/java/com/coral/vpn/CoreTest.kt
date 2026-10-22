@@ -52,4 +52,28 @@ class CoreTest {
         val c = JSONObject(XrayConfig.build(Subscription.parseVless(reality), RouteMode.ALL))
         assertFalse(c.getJSONObject("routing").toString().contains("geoip:ru"))
     }
+
+    @Test fun parsesUserInfoHeader() {
+        val i = Api.parseUserInfo("upload=100; download=900; total=0; expire=1824147360")
+        assertEquals(1000L, i.used)
+        assertEquals(1824147360L, i.expire)
+    }
+
+    @Test fun serverTitles() {
+        assertEquals("Защищённый", Subscription.parseVless(ws).title())
+        assertEquals("Быстрый", Subscription.parseVless(reality).title())
+    }
+
+    @Test fun adblockAddsBlockRuleFirst() {
+        val c = JSONObject(XrayConfig.build(Subscription.parseVless(reality), RouteMode.ALL, adblock = true))
+        val first = c.getJSONObject("routing").getJSONArray("rules").getJSONObject(0)
+        assertEquals("block", first.getString("outboundTag"))
+        assertTrue(first.toString().contains("category-ads-all"))
+    }
+
+    @Test fun blockedModeDefaultsToDirect() {
+        val rules = JSONObject(XrayConfig.build(Subscription.parseVless(reality), RouteMode.BLOCKED)).getJSONObject("routing").getJSONArray("rules")
+        assertEquals("direct", rules.getJSONObject(rules.length() - 1).getString("outboundTag"))
+        assertTrue(rules.toString().contains("geosite:youtube"))
+    }
 }
