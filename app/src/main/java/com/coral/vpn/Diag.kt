@@ -26,11 +26,15 @@ object Diag {
 
     fun report(): String {
         val steps = runCatching { file?.readText() }.getOrNull().orEmpty().takeLast(6000)
+        val crash = runCatching {
+            val p = Runtime.getRuntime().exec(arrayOf("logcat", "-b", "crash", "-d", "-t", "60"))
+            p.inputStream.bufferedReader().readText().takeLast(4000)
+        }.getOrDefault("")
         val sys = runCatching {
-            val p = Runtime.getRuntime().exec(arrayOf("logcat", "-d", "-t", "250", "*:W"))
+            val p = Runtime.getRuntime().exec(arrayOf("logcat", "-d", "-t", "120", "Coral:W", "*:S"))
             p.inputStream.bufferedReader().readText().takeLast(9000)
         }.getOrDefault("")
-        return "== Шаги ==\n$steps\n== Системный лог ==\n$sys"
+        return "== Шаги ==\n$steps\n== Аварии ==\n$crash\n== Лог ==\n$sys"
     }
 
     fun share(ctx: Context) {

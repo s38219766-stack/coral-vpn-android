@@ -92,13 +92,14 @@ class CoralVpnService : VpnService() {
             misc:
               task-stack-size: 81920
               connect-timeout: 5000
-              read-write-timeout: 60000
+              tcp-read-write-timeout: 300000
+              udp-read-write-timeout: 60000
               log-level: warn
             """.trimIndent()
         )
         Diag.log("шаг 5: запуск туннеля hev, fd=${fd.fd}")
-        TProxyService.TProxyStartService(hev.path, fd.fd)
-        Diag.log("шаг 6: туннель запущен")
+        check(TProxyService.TProxyStartService(hev.path, fd.fd)) { "туннель hev не запустился" }
+        Diag.log("шаг 6: туннель запущен, работает=${TProxyService.TProxyIsRunning()}")
         state.value = VpnState.ON
         message.value = "Подключено"
     }
