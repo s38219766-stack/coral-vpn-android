@@ -26,6 +26,7 @@ class MainVm(app: Application) : AndroidViewModel(app) {
     var apps by mutableStateOf(prefs.getStringSet("apps", emptySet()) ?: emptySet())
     var pick by mutableStateOf(prefs.getString("pick", "") ?: "") // "" = «Авто»
     var adblock by mutableStateOf(prefs.getBoolean("adblock", false))
+    var mobile by mutableStateOf(prefs.getBoolean("mobile", false))
     var login by mutableStateOf(LoginState.IDLE)
     var notice by mutableStateOf("")
     var loading by mutableStateOf(false)
@@ -34,6 +35,7 @@ class MainVm(app: Application) : AndroidViewModel(app) {
     val loggedIn get() = subUrl.isNotBlank()
 
     fun changeMode(m: RouteMode) { mode = m; prefs.edit().putString("mode", m.name).apply() }
+    fun changeMobile(v: Boolean) { mobile = v; prefs.edit().putBoolean("mobile", v).apply() }
     fun changeAdblock(v: Boolean) { adblock = v; prefs.edit().putBoolean("adblock", v).apply() }
     fun saveApps(v: Set<String>) { apps = v; prefs.edit().putStringSet("apps", v).apply() }
     fun choose(name: String) { pick = name; prefs.edit().putString("pick", name).apply() }
@@ -93,15 +95,18 @@ class MainVm(app: Application) : AndroidViewModel(app) {
         val first = servers.firstOrNull { it.name == pick } ?: servers.first()
         val ordered = listOf(first) + servers.filter { it != first }
         return Intent(ctx, CoralVpnService::class.java)
-            .putExtra(CoralVpnService.EXTRA_CONFIGS, ordered.map { XrayConfig.build(it, mode, adblock) }.toTypedArray())
+            .putExtra(CoralVpnService.EXTRA_CONFIGS, ordered.map { XrayConfig.build(it, mode, adblock, mobile) }.toTypedArray())
             .putExtra(CoralVpnService.EXTRA_NAMES, ordered.map { it.title() }.toTypedArray())
             .putExtra(CoralVpnService.EXTRA_APPS, apps.toTypedArray())
+            .putExtra(CoralVpnService.EXTRA_MOBILE, mobile)
     }
 }
 
 /** Понятное название вместо технического имени из подписки. */
 fun Server.title(): String = when {
     network == "ws" -> "Защищённый"
+    network == "xhttp" -> "Запасной (XHTTP)"
+    security == "reality" && port != 443 -> "Резервный (по IP)"
     security == "reality" -> "Быстрый"
     else -> name
 }

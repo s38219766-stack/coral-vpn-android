@@ -17,7 +17,7 @@ object XrayConfig {
         "geosite:notion", "geosite:medium", "geosite:signal", "geosite:telegram", "geosite:whatsapp",
     )
 
-    fun build(s: Server, mode: RouteMode = RouteMode.RU_DIRECT, adblock: Boolean = false): String {
+    fun build(s: Server, mode: RouteMode = RouteMode.RU_DIRECT, adblock: Boolean = false, mobile: Boolean = false): String {
         val root = JSONObject()
         root.put("log", JSONObject().put("loglevel", "warning"))
         root.put("dns", JSONObject().put("servers", JSONArray(listOf("1.1.1.1", "8.8.8.8"))))
@@ -28,14 +28,14 @@ object XrayConfig {
                 .put("sniffing", JSONObject().put("enabled", true).put("destOverride", JSONArray(listOf("http", "tls", "quic"))))
         ))
         root.put("outbounds", JSONArray()
-            .put(proxy(s))
+            .put(proxy(s, mobile))
             .put(JSONObject().put("tag", "direct").put("protocol", "freedom"))
             .put(JSONObject().put("tag", "block").put("protocol", "blackhole")))
-        root.put("routing", routing(mode, adblock))
+        root.put("routing", routing(mode, adblock, mobile))
         return root.toString(2)
     }
 
-    private fun proxy(s: Server): JSONObject {
+    private fun proxy(s: Server, mobile: Boolean = false): JSONObject {
         val user = JSONObject().put("id", s.uuid).put("encryption", "none")
         if (s.flow.isNotEmpty()) user.put("flow", s.flow)
         val stream = JSONObject().put("network", s.network).put("security", s.security)
@@ -54,15 +54,35 @@ object XrayConfig {
             ws.put("headers", JSONObject().put("Host", hostName))
             stream.put("wsSettings", ws)
         }
-        return JSONObject().put("tag", "proxy").put("protocol", "vless")
+        if (s.network == "xhttp") {
+            val xh = JSONObject()
+                .put("path", s.path.ifEmpty { "/" })
+                .put("host", s.hostHeader.ifEmpty { s.sni.ifEmpty { s.host } })
+                .put("mode", s.mode.ifEmpty { "auto" })
+            if (s.extra.isNotEmpty()) runCatching { xh.put("extra", JSONObject(s.extra)) }
+            stream.put("xhttpSettings", xh)
+        }
+        // Мобильный режим: без задержки отправки мелких пакетов и (для WS) объединение соединений в одно
+        if (mobile) stream.put("sockopt", JSONObject()
+            .put("tcpNoDelay", true)
+            .put("tcpKeepAliveInterval", 30)   // держим соединение «живым» для NAT оператора
+            .put("tcpKeepAliveIdle", 30))
+        val out = JSONObject().put("tag", "proxy").put("protocol", "vless")
             .put("settings", JSONObject().put("vnext", JSONArray().put(
                 JSONObject().put("address", s.host).put("port", s.port).put("users", JSONArray().put(user)))))
             .put("streamSettings", stream)
+        if (mobile && s.network == "ws") {
+            out.put("mux", JSONObject().put("enabled", true).put("concurrency", 8).put("xudpConcurrency", 16).put("xudpProxyUDP443", "reject"))
+        }
+        return out
     }
 
-    private fun routing(mode: RouteMode, adblock: Boolean): JSONObject {
+    private fun routing(mode: RouteMode, adblock: Boolean, mobile: Boolean = false): JSONObject {
         val rules = JSONArray()
         if (adblock) rules.put(rule("block").put("domain", JSONArray(listOf("geosite:category-ads-all"))))
+        // Мобильный режим: QUIC (UDP 443) блокируем, чтобы браузеры и приложения перешли на TCP —
+        // он стабильнее на мобильных сетях с потерями и нередко быстрее
+        if (mobile) rules.put(rule("block").put("network", "udp").put("port", "443"))
         // Локальные адреса всегда напрямую
         rules.put(rule("direct").put("ip", JSONArray(listOf("geoip:private"))))
         when (mode) {

@@ -76,4 +76,41 @@ class CoreTest {
         assertEquals("direct", rules.getJSONObject(rules.length() - 1).getString("outboundTag"))
         assertTrue(rules.toString().contains("geosite:youtube"))
     }
+
+    private val xhttp = "vless://11111111-2222-3333-4444-555555555555@coralsvobod.duckdns.org:443?security=tls&type=xhttp&headerType=&path=%2Fxh123&host=coralsvobod.duckdns.org&mode=packet-up&extra=%7B%22scMaxEachPostBytes%22%3A+1000000%2C+%22xPaddingBytes%22%3A+%22100-1000%22%2C+%22noGRPCHeader%22%3A+false%7D&sni=coralsvobod.duckdns.org&fp=chrome&alpn=h2#x"
+
+    @Test fun parsesAndBuildsXhttp() {
+        val s = Subscription.parseVless(xhttp)
+        assertEquals("xhttp", s.network)
+        assertEquals("packet-up", s.mode)
+        val st = JSONObject(XrayConfig.build(s, RouteMode.ALL)).getJSONArray("outbounds").getJSONObject(0).getJSONObject("streamSettings")
+        val xs = st.getJSONObject("xhttpSettings")
+        assertEquals("/xh123", xs.getString("path"))
+        assertEquals("packet-up", xs.getString("mode"))
+        assertEquals("100-1000", xs.getJSONObject("extra").getString("xPaddingBytes"))
+        assertEquals("Запасной (XHTTP)", s.title())
+    }
+
+    @Test fun mobileModeAddsMuxOnlyForWs() {
+        val wsOut = JSONObject(XrayConfig.build(Subscription.parseVless(ws), RouteMode.ALL, mobile = true)).getJSONArray("outbounds").getJSONObject(0)
+        assertTrue(wsOut.getJSONObject("mux").getBoolean("enabled"))
+        assertTrue(wsOut.getJSONObject("streamSettings").getJSONObject("sockopt").getBoolean("tcpNoDelay"))
+        val reOut = JSONObject(XrayConfig.build(Subscription.parseVless(reality), RouteMode.ALL, mobile = true)).getJSONArray("outbounds").getJSONObject(0)
+        assertFalse(reOut.has("mux"))
+        val plain = JSONObject(XrayConfig.build(Subscription.parseVless(ws), RouteMode.ALL)).getJSONArray("outbounds").getJSONObject(0)
+        assertFalse(plain.has("mux"))
+    }
+
+    @Test fun mobileModeBlocksQuicAndKeepsAlive() {
+        val c = JSONObject(XrayConfig.build(Subscription.parseVless(ws), RouteMode.ALL, mobile = true))
+        val rules = c.getJSONObject("routing").getJSONArray("rules")
+        val first = rules.getJSONObject(0)
+        assertEquals("block", first.getString("outboundTag"))
+        assertEquals("443", first.getString("port"))
+        assertEquals("udp", first.getString("network"))
+        val sock = c.getJSONArray("outbounds").getJSONObject(0).getJSONObject("streamSettings").getJSONObject("sockopt")
+        assertEquals(30, sock.getInt("tcpKeepAliveInterval"))
+        val plain = JSONObject(XrayConfig.build(Subscription.parseVless(ws), RouteMode.ALL)).getJSONObject("routing").getJSONArray("rules")
+        assertFalse(plain.toString().contains("\"port\":\"443\""))
+    }
 }

@@ -20,6 +20,8 @@ data class Server(
     val path: String,
     val hostHeader: String,
     val alpn: List<String>,
+    val mode: String = "",      // XHTTP: auto | packet-up | stream-up
+    val extra: String = "",     // XHTTP: дополнительные параметры (JSON)
 )
 
 object Subscription {
@@ -56,6 +58,8 @@ object Subscription {
             path = q["path"].orEmpty(),
             hostHeader = q["host"].orEmpty(),
             alpn = q["alpn"].orEmpty().split(",").filter { it.isNotBlank() },
+            mode = q["mode"].orEmpty(),
+            extra = q["extra"].orEmpty(),
         )
     }
 }

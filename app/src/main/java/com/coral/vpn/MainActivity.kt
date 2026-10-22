@@ -378,6 +378,13 @@ private fun RouteCard(vm: MainVm) {
             }
             Switch(checked = vm.adblock, onCheckedChange = { vm.changeAdblock(it) })
         }
+        Row(Modifier.fillMaxWidth(), horizontalArrangement = Arrangement.SpaceBetween, verticalAlignment = Alignment.CenterVertically) {
+            Column(Modifier.weight(1f)) {
+                Text("Мобильный режим", color = Color.White)
+                Text("Для слабого мобильного интернета: меньше задержек при открытии страниц. Переподключитесь после смены.", color = Muted, fontSize = 12.sp)
+            }
+            Switch(checked = vm.mobile, onCheckedChange = { vm.changeMobile(it) })
+        }
         AppsPicker(vm)
     }
 }

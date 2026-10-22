@@ -22,6 +22,7 @@ class CoralVpnService : VpnService() {
         const val EXTRA_CONFIGS = "configs"
         const val EXTRA_NAMES = "names"
         const val EXTRA_APPS = "apps"
+        const val EXTRA_MOBILE = "mobile"
         val state = MutableStateFlow(VpnState.OFF)
         val message = MutableStateFlow("")
     }
@@ -34,16 +35,18 @@ class CoralVpnService : VpnService() {
         val configs = intent?.getStringArrayExtra(EXTRA_CONFIGS)?.toList() ?: return START_NOT_STICKY
         val names = intent.getStringArrayExtra(EXTRA_NAMES)?.toList().orEmpty()
         val apps = intent.getStringArrayExtra(EXTRA_APPS)?.toList().orEmpty()
+        val mobile = intent.getBooleanExtra(EXTRA_MOBILE, false)
         Diag.clear()
         Diag.log("onStartCommand, приложений в списке: ${apps.size}")
         startForegroundCompat()
         state.value = VpnState.CONNECTING
         message.value = "Подключение…"
-        Thread { runCatching { start(configs, names, apps) }.onFailure { fail(it) } }.start()
+        Thread { runCatching { start(configs, names, apps, mobile) }.onFailure { fail(it) } }.start()
         return START_NOT_STICKY
     }
 
-    private fun start(configs: List<String>, names: List<String>, apps: List<String>) {
+    private fun start(configs: List<String>, names: List<String>, apps: List<String>, mobile: Boolean) {
+        val mtu = if (mobile) 1400 else 8500 // на мобильных сетях меньший MTU избавляет от потерь крупных пакетов
         Diag.log("шаг 1: копирование geoip/geosite")
         val assets = File(filesDir, "xray-assets").apply { mkdirs() }
         for (name in listOf("geoip.dat", "geosite.dat")) {
@@ -72,7 +75,7 @@ class CoralVpnService : VpnService() {
 
         val builder = Builder()
             .setSession("Coral VPN")
-            .setMtu(8500)
+            .setMtu(mtu)
             .addAddress("198.18.0.1", 32)
             .addRoute("0.0.0.0", 0)
             .addAddress("fc00::1", 128)
@@ -91,7 +94,7 @@ class CoralVpnService : VpnService() {
         hev.writeText(
             """
             tunnel:
-              mtu: 8500
+              mtu: $mtu
               ipv4: 198.18.0.1
               ipv6: 'fc00::1'
             socks5:
@@ -129,9 +132,19 @@ class CoralVpnService : VpnService() {
                 }
             }
         }.start()
-        Thread.sleep(800)
+        waitForSocks(proc)
         if (!proc.isAlive) return false
         return if (verify) probe() else true
+    }
+
+    /** Ждём, пока ядро откроет локальный SOCKS-порт (обычно доли секунды), максимум 3 секунды. */
+    private fun waitForSocks(proc: Process) {
+        repeat(30) {
+            if (!proc.isAlive) return
+            val up = runCatching { java.net.Socket("127.0.0.1", XrayConfig.SOCKS_PORT).use { true } }.getOrDefault(false)
+            if (up) return
+            Thread.sleep(100)
+        }
     }
 
     /** Запрос через локальный SOCKS ядра: 204 значит, сервер работает. Только HTTPS — открытый HTTP Android запрещает. */
@@ -140,8 +153,8 @@ class CoralVpnService : VpnService() {
         for (url in listOf("https://cp.cloudflare.com/generate_204", "https://www.gstatic.com/generate_204")) {
             runCatching {
                 val c = java.net.URL(url).openConnection(proxy) as java.net.HttpURLConnection
-                c.connectTimeout = 7000
-                c.readTimeout = 7000
+                c.connectTimeout = 4000
+                c.readTimeout = 4000
                 val code = c.responseCode
                 c.disconnect()
                 Diag.log("проверка связи ($url): HTTP $code")
