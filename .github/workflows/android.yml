@@ -12,6 +12,20 @@ jobs:
       - uses: gradle/actions/setup-gradle@v4
         with:
           gradle-version: "8.9"
+      - name: Xray-core (MPL-2.0)
+        run: |
+          curl -fL -o xray.zip https://github.com/XTLS/Xray-core/releases/download/v24.12.31/Xray-android-arm64-v8a.zip
+          unzip -o xray.zip -d xray && ls -la xray
+          mkdir -p app/src/main/jniLibs/arm64-v8a app/src/main/assets
+          cp xray/xray app/src/main/jniLibs/arm64-v8a/libxray.so
+          cp xray/geoip.dat xray/geosite.dat app/src/main/assets/
+      - name: hev-socks5-tunnel (MIT)
+        run: |
+          mkdir -p hevbuild/jni && cd hevbuild
+          git clone --depth 1 --recursive --shallow-submodules https://github.com/heiher/hev-socks5-tunnel jni/hev-socks5-tunnel
+          echo 'include $(call all-subdir-makefiles)' > jni/Android.mk
+          "$ANDROID_NDK_LATEST_HOME/ndk-build" NDK_PROJECT_PATH=. APP_BUILD_SCRIPT=jni/Android.mk APP_ABI=arm64-v8a APP_PLATFORM=android-26 "APP_CFLAGS=-O3 -DPKGNAME=com/coral/vpn" "APP_LDFLAGS=-Wl,--build-id=none"
+          cp libs/arm64-v8a/libhev-socks5-tunnel.so ../app/src/main/jniLibs/arm64-v8a/
       - run: gradle :app:testDebugUnitTest :app:assembleDebug --no-daemon
       - uses: actions/upload-artifact@v4
         with:
