@@ -34,6 +34,17 @@ class MainVm(app: Application) : AndroidViewModel(app) {
 
     val loggedIn get() = subUrl.isNotBlank()
 
+    init {
+        Api.setMirrors((prefs.getString("mirrors", "") ?: "").split(",").filter { it.isNotBlank() })
+        // Серверы из последней удачной загрузки: приложение работает, даже если домен сейчас недоступен
+        prefs.getString("sub_cache", null)?.let { raw ->
+            runCatching {
+                servers = Subscription.parse(raw)
+                info = prefs.getString("sub_info", null)?.let { Api.parseUserInfo(it) }
+            }
+        }
+    }
+
     fun changeMode(m: RouteMode) { mode = m; prefs.edit().putString("mode", m.name).apply() }
     fun changeMobile(v: Boolean) { mobile = v; prefs.edit().putBoolean("mobile", v).apply() }
     fun changeAdblock(v: Boolean) { adblock = v; prefs.edit().putBoolean("adblock", v).apply() }
@@ -48,7 +59,7 @@ class MainVm(app: Application) : AndroidViewModel(app) {
 
     fun logout() {
         subUrl = ""; servers = emptyList(); info = null; pick = ""
-        prefs.edit().remove("sub").remove("pick").apply()
+        prefs.edit().remove("sub").remove("pick").remove("sub_cache").remove("sub_info").apply()
         login = LoginState.IDLE
     }
 
@@ -56,12 +67,20 @@ class MainVm(app: Application) : AndroidViewModel(app) {
         if (subUrl.isBlank()) return
         loading = true
         viewModelScope.launch(Dispatchers.IO) {
-            runCatching { Api.fetchSubscription(subUrl) }
-                .onSuccess { (list, ui) ->
-                    servers = list; info = ui
+            runCatching { Api.fetchRaw(subUrl) }
+                .onSuccess { (body, header) ->
+                    val list = Subscription.parse(body)
+                    servers = list; info = header?.let { Api.parseUserInfo(it) }
                     notice = if (list.isEmpty()) "В подписке нет серверов — проверьте срок действия" else ""
+                    if (list.isNotEmpty()) prefs.edit().putString("sub_cache", body).putString("sub_info", header).apply()
+                    runCatching { Api.fetchMirrors() }.onSuccess { m ->
+                        Api.setMirrors(m); prefs.edit().putString("mirrors", m.joinToString(",")).apply()
+                    }
                 }
-                .onFailure { notice = "Не удалось обновить подписку: ${it.message}" }
+                .onFailure {
+                    notice = if (servers.isEmpty()) "Не удалось обновить подписку: ${it.message}"
+                    else "Нет связи с сервером подписки — используем сохранённые серверы"
+                }
             loading = false
         }
     }

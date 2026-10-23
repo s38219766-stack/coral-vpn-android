@@ -119,4 +119,11 @@ class CoreTest {
         assertEquals("reality", Subscription.parseVless(reality).transportKey())
         assertEquals("reality_ip", Subscription.parseVless(reality.replace(":443?", ":8443?")).transportKey())
     }
+
+    @Test fun mirrorsKeepPathAndPutMainFirst() {
+        Api.setMirrors(listOf("backup.example.com", "bad host!", "coralsvobod.duckdns.org"))
+        val c = Api.candidates("https://coralsvobod.duckdns.org/sub/abc123")
+        assertEquals(listOf("https://coralsvobod.duckdns.org/sub/abc123", "https://backup.example.com/sub/abc123"), c)
+        Api.setMirrors(emptyList())
+    }
 }

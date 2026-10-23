@@ -10,7 +10,33 @@ object Api {
     const val BASE = "https://coralsvobod.duckdns.org"
     const val BOT = "https://t.me/coralbypasses_vpn_bot"
 
-    private fun call(method: String, url: String): String {
+    /** Основной домен и запасные (запоминаются из /api/mirrors). Любой запрос пробует их по очереди. */
+    @Volatile var hosts: List<String> = listOf(URL(BASE).host)
+
+    fun setMirrors(list: List<String>) {
+        val main = URL(BASE).host
+        hosts = (listOf(main) + list.filter { it != main && it.matches(Regex("[a-z0-9.-]+")) }).distinct()
+    }
+
+    /** Тот же адрес на каждом из доменов, основной первым. */
+    fun candidates(url: String): List<String> {
+        val u = URL(url)
+        return hosts.map { h -> if (h == u.host) url else URL(u.protocol, h, u.port, u.file).toString() }.distinct()
+    }
+
+    private fun <T> firstOk(url: String, f: (String) -> T): T {
+        var last: Throwable? = null
+        for (c in candidates(url)) {
+            try { return f(c) } catch (e: Exception) { last = e }
+        }
+        throw last ?: IllegalStateException("no hosts")
+    }
+
+    fun fetchMirrors(): List<String> = JSONObject(call("GET", "$BASE/api/mirrors")).getJSONArray("domains").let { a -> List(a.length()) { a.getString(it) } }
+
+    private fun call(method: String, url: String): String = firstOk(url) { callOne(method, it) }
+
+    private fun callOne(method: String, url: String): String {
         val c = URL(url).openConnection() as HttpURLConnection
         c.requestMethod = method
         c.connectTimeout = 10000
@@ -29,13 +55,18 @@ object Api {
 
     /** Загружает подписку: список серверов и сведения об аккаунте из заголовка. */
     fun fetchSubscription(url: String): Pair<List<Server>, UserInfo?> {
-        val c = URL(url).openConnection() as HttpURLConnection
-        c.connectTimeout = 10000
+        val (body, header) = fetchRaw(url)
+        return Subscription.parse(body) to header?.let { parseUserInfo(it) }
+    }
+
+    /** Сырой ответ подписки и заголовок с остатком трафика — их же кладём в кэш. */
+    fun fetchRaw(url: String): Pair<String, String?> = firstOk(url) { u ->
+        val c = URL(u).openConnection() as HttpURLConnection
+        c.connectTimeout = 8000
         c.readTimeout = 10000
-        c.setRequestProperty("User-Agent", "CoralVPN/0.3")
+        c.setRequestProperty("User-Agent", "CoralVPN/0.5")
         val body = c.inputStream.bufferedReader().readText()
-        val info = c.getHeaderField("subscription-userinfo")?.let { parseUserInfo(it) }
-        return Subscription.parse(body) to info
+        body to c.getHeaderField("subscription-userinfo")
     }
 
     fun parseUserInfo(h: String): UserInfo {
