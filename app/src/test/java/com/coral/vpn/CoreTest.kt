@@ -113,4 +113,10 @@ class CoreTest {
         val plain = JSONObject(XrayConfig.build(Subscription.parseVless(ws), RouteMode.ALL)).getJSONObject("routing").getJSONArray("rules")
         assertFalse(plain.toString().contains("\"port\":\"443\""))
     }
+
+    @Test fun transportKeysMatchServerNames() {
+        assertEquals("ws", Subscription.parseVless(ws).transportKey())
+        assertEquals("reality", Subscription.parseVless(reality).transportKey())
+        assertEquals("reality_ip", Subscription.parseVless(reality.replace(":443?", ":8443?")).transportKey())
+    }
 }

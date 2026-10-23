@@ -97,9 +97,19 @@ class MainVm(app: Application) : AndroidViewModel(app) {
         return Intent(ctx, CoralVpnService::class.java)
             .putExtra(CoralVpnService.EXTRA_CONFIGS, ordered.map { XrayConfig.build(it, mode, adblock, mobile) }.toTypedArray())
             .putExtra(CoralVpnService.EXTRA_NAMES, ordered.map { it.title() }.toTypedArray())
+            .putExtra(CoralVpnService.EXTRA_KEYS, ordered.map { it.transportKey() }.toTypedArray())
+            .putExtra(CoralVpnService.EXTRA_AUTO, pick.isBlank())
             .putExtra(CoralVpnService.EXTRA_APPS, apps.toTypedArray())
             .putExtra(CoralVpnService.EXTRA_MOBILE, mobile)
     }
+}
+
+/** Ключ транспорта для статистики: по нему сервер знает, что работает у какого оператора. */
+fun Server.transportKey(): String = when {
+    network == "ws" -> "ws"
+    network == "xhttp" -> "xhttp"
+    security == "reality" && port != 443 -> "reality_ip"
+    else -> "reality"
 }
 
 /** Понятное название вместо технического имени из подписки. */
