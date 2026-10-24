@@ -37,6 +37,8 @@ class MainVm(app: Application) : AndroidViewModel(app) {
     var login by mutableStateOf(LoginState.IDLE)
     var notice by mutableStateOf("")
     var loading by mutableStateOf(false)
+    /** Название новой версии, если на сервере есть свежее приложение */
+    var update by mutableStateOf<String?>(null)
     private var loginJob: Job? = null
 
     val loggedIn get() = subUrl.isNotBlank()
@@ -75,7 +77,21 @@ class MainVm(app: Application) : AndroidViewModel(app) {
         login = LoginState.IDLE
     }
 
+    fun checkUpdate() {
+        viewModelScope.launch(Dispatchers.IO) {
+            runCatching {
+                val j = Api.appInfo()
+                val ctx = getApplication<Application>()
+                val p = ctx.packageManager.getPackageInfo(ctx.packageName, 0)
+                @Suppress("DEPRECATION")
+                val mine = if (android.os.Build.VERSION.SDK_INT >= 28) p.longVersionCode else p.versionCode.toLong()
+                update = if (j.optBoolean("available") && j.optLong("vc") > mine) j.optString("version", "новая") else null
+            }
+        }
+    }
+
     fun refresh() {
+        checkUpdate()
         if (subUrl.isBlank()) return
         loading = true
         viewModelScope.launch(Dispatchers.IO) {

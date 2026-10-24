@@ -287,6 +287,14 @@ private fun HomeScreen(vm: MainVm) {
             TextButton(onClick = { settings = true }) { Text("⚙ Настройки", color = Muted) }
         }
 
+        vm.update?.let { v ->
+            GlassCard {
+                Text("Доступна новая версия: $v", color = Color.White, fontWeight = FontWeight.Bold)
+                Text("Скачайте и установите поверх — настройки и вход сохранятся.", color = Muted, fontSize = 12.sp)
+                Button(onClick = { ctx.startActivity(Intent(Intent.ACTION_VIEW, Uri.parse("${Api.BASE}/download/coral-vpn.apk"))) }, modifier = Modifier.fillMaxWidth()) { Text("Скачать обновление") }
+            }
+        }
+
         Pearl(
             size = 270.dp, lit = state == VpnState.ON || state == VpnState.CONNECTING, busy = state == VpnState.CONNECTING,
             enabled = vm.servers.isNotEmpty(), onClick = toggle,

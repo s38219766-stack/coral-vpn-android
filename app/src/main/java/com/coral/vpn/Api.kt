@@ -32,6 +32,8 @@ object Api {
         throw last ?: IllegalStateException("no hosts")
     }
 
+    fun appInfo(): JSONObject = JSONObject(call("GET", "$BASE/api/app-info"))
+
     fun fetchMirrors(): List<String> = JSONObject(call("GET", "$BASE/api/mirrors")).getJSONArray("domains").let { a -> List(a.length()) { a.getString(it) } }
 
     private fun call(method: String, url: String): String = firstOk(url) { callOne(method, it) }
