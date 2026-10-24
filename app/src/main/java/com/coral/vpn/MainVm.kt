@@ -147,6 +147,7 @@ class MainVm(app: Application) : AndroidViewModel(app) {
 fun Server.transportKey(): String = when {
     network == "ws" -> "ws"
     network == "xhttp" -> "xhttp"
+    name.contains("Coral RU") -> "reality_ru"
     security == "reality" && port != 443 -> "reality_ip"
     else -> "reality"
 }
@@ -155,6 +156,7 @@ fun Server.transportKey(): String = when {
 fun Server.title(): String = when {
     network == "ws" -> "Защищённый"
     network == "xhttp" -> "Запасной (XHTTP)"
+    name.contains("Coral RU") -> "Через Россию"
     security == "reality" && port != 443 -> "Резервный (по IP)"
     security == "reality" -> "Быстрый"
     else -> name

@@ -176,4 +176,10 @@ class CoreTest {
         assertEquals("direct", rules.getJSONObject(1).getString("outboundTag"))
         assertTrue(rules.getJSONObject(1).toString().contains("domain:bank.ru"))
     }
+
+    @Test fun russianBridgeServerIsRecognized() {
+        val ru = Subscription.parseVless(reality.replace("146.103.25.67", "155.212.139.252").replace("#Reality", "#Coral%20RU%20%28tg1%29"))
+        assertEquals("reality_ru", ru.transportKey())
+        assertEquals("Через Россию", ru.title())
+    }
 }
