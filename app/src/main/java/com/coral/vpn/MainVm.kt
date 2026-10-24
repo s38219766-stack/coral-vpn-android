@@ -23,10 +23,17 @@ class MainVm(app: Application) : AndroidViewModel(app) {
     var servers by mutableStateOf<List<Server>>(emptyList())
     var info by mutableStateOf<UserInfo?>(null)
     var mode by mutableStateOf(runCatching { RouteMode.valueOf(prefs.getString("mode", "") ?: "") }.getOrDefault(RouteMode.RU_DIRECT))
-    var apps by mutableStateOf(prefs.getStringSet("apps", emptySet()) ?: emptySet())
+    var apps by mutableStateOf(prefs.getStringSet("apps", emptySet()) ?: emptySet())   // режим «только выбранные через VPN»
+    var excluded by mutableStateOf(prefs.getStringSet("excluded", emptySet()) ?: emptySet()) // режим «выбранные без VPN»
+    /** all — все через VPN, exclude — все, кроме выбранных, only — только выбранные */
+    var appsMode by mutableStateOf(prefs.getString("apps_mode", null) ?: if (prefs.getStringSet("apps", emptySet()).isNullOrEmpty()) "all" else "only")
+    var sitesVpn by mutableStateOf(prefs.getString("sites_vpn", "") ?: "")
+    var sitesDirect by mutableStateOf(prefs.getString("sites_direct", "") ?: "")
+    var banksDirect by mutableStateOf(prefs.getBoolean("banks_direct", true))
     var pick by mutableStateOf(prefs.getString("pick", "") ?: "") // "" = «Авто»
     var adblock by mutableStateOf(prefs.getBoolean("adblock", false))
     var mobile by mutableStateOf(prefs.getBoolean("mobile", false))
+    var fragment by mutableStateOf(prefs.getBoolean("fragment", false))
     var login by mutableStateOf(LoginState.IDLE)
     var notice by mutableStateOf("")
     var loading by mutableStateOf(false)
@@ -47,7 +54,12 @@ class MainVm(app: Application) : AndroidViewModel(app) {
 
     fun changeMode(m: RouteMode) { mode = m; prefs.edit().putString("mode", m.name).apply() }
     fun changeMobile(v: Boolean) { mobile = v; prefs.edit().putBoolean("mobile", v).apply() }
+    fun changeFragment(v: Boolean) { fragment = v; prefs.edit().putBoolean("fragment", v).apply() }
     fun changeAdblock(v: Boolean) { adblock = v; prefs.edit().putBoolean("adblock", v).apply() }
+    fun changeAppsMode(m: String) { appsMode = m; prefs.edit().putString("apps_mode", m).apply() }
+    fun saveExcluded(v: Set<String>) { excluded = v; prefs.edit().putStringSet("excluded", v).apply() }
+    fun saveSites(vpn: String, direct: String) { sitesVpn = vpn; sitesDirect = direct; prefs.edit().putString("sites_vpn", vpn).putString("sites_direct", direct).apply() }
+    fun changeBanks(v: Boolean) { banksDirect = v; prefs.edit().putBoolean("banks_direct", v).apply() }
     fun saveApps(v: Set<String>) { apps = v; prefs.edit().putStringSet("apps", v).apply() }
     fun choose(name: String) { pick = name; prefs.edit().putString("pick", name).apply() }
 
@@ -113,12 +125,20 @@ class MainVm(app: Application) : AndroidViewModel(app) {
         if (servers.isEmpty()) return null
         val first = servers.firstOrNull { it.name == pick } ?: servers.first()
         val ordered = listOf(first) + servers.filter { it != first }
+        // Банки и госуслуги по умолчанию всегда идут мимо VPN — на уровне системы, а не по адресам сайтов
+        val banks = if (banksDirect) AppRules.banks(AppRules.installed(ctx)) else emptySet()
+        val (appListMode, appList) = when {
+            appsMode == "only" && (apps - banks).isNotEmpty() -> "only" to (apps - banks)
+            appsMode == "exclude" -> "exclude" to (excluded + banks)
+            else -> "exclude" to banks
+        }
         return Intent(ctx, CoralVpnService::class.java)
-            .putExtra(CoralVpnService.EXTRA_CONFIGS, ordered.map { XrayConfig.build(it, mode, adblock, mobile) }.toTypedArray())
+            .putExtra(CoralVpnService.EXTRA_CONFIGS, ordered.map { XrayConfig.build(it, mode, adblock, mobile, fragment, XrayConfig.cleanDomains(sitesVpn), XrayConfig.cleanDomains(sitesDirect)) }.toTypedArray())
             .putExtra(CoralVpnService.EXTRA_NAMES, ordered.map { it.title() }.toTypedArray())
             .putExtra(CoralVpnService.EXTRA_KEYS, ordered.map { it.transportKey() }.toTypedArray())
             .putExtra(CoralVpnService.EXTRA_AUTO, pick.isBlank())
-            .putExtra(CoralVpnService.EXTRA_APPS, apps.toTypedArray())
+            .putExtra(CoralVpnService.EXTRA_APPS, appList.toTypedArray())
+            .putExtra(CoralVpnService.EXTRA_APPS_MODE, appListMode)
             .putExtra(CoralVpnService.EXTRA_MOBILE, mobile)
     }
 }

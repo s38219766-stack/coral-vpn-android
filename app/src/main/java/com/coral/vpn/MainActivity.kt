@@ -385,7 +385,22 @@ private fun RouteCard(vm: MainVm) {
             }
             Switch(checked = vm.mobile, onCheckedChange = { vm.changeMobile(it) })
         }
+        Row(Modifier.fillMaxWidth(), horizontalArrangement = Arrangement.SpaceBetween, verticalAlignment = Alignment.CenterVertically) {
+            Column(Modifier.weight(1f)) {
+                Text("Усиленный обход", color = Color.White)
+                Text("Дробит начало соединения на части — помогает там, где сеть узнаёт и обрывает VPN. Включайте, если обычные серверы не подключаются. Может чуть замедлить запуск. Переподключитесь после смены.", color = Muted, fontSize = 12.sp)
+            }
+            Switch(checked = vm.fragment, onCheckedChange = { vm.changeFragment(it) })
+        }
+        Row(Modifier.fillMaxWidth(), horizontalArrangement = Arrangement.SpaceBetween, verticalAlignment = Alignment.CenterVertically) {
+            Column(Modifier.weight(1f)) {
+                Text("Банки и Госуслуги — без VPN", color = Color.White)
+                Text("Банковские приложения и Госуслуги никогда не идут через VPN (отключается на уровне системы). Переподключитесь после смены.", color = Muted, fontSize = 12.sp)
+            }
+            Switch(checked = vm.banksDirect, onCheckedChange = { vm.changeBanks(it) })
+        }
         AppsPicker(vm)
+        SitesEditor(vm)
     }
 }
 
@@ -393,30 +408,74 @@ private fun RouteCard(vm: MainVm) {
 private fun AppsPicker(vm: MainVm) {
     val ctx = LocalContext.current
     var open by remember { mutableStateOf(false) }
-    val list = remember {
-        val pm = ctx.packageManager
-        val i = Intent(Intent.ACTION_MAIN).addCategory(Intent.CATEGORY_LAUNCHER)
-        pm.queryIntentActivities(i, 0)
-            .map { it.activityInfo.packageName to it.loadLabel(pm).toString() }
-            .filter { it.first != ctx.packageName }
-            .distinctBy { it.first }.sortedBy { it.second.lowercase() }
-    }
+    var query by remember { mutableStateOf("") }
+    val list = remember { AppRules.installed(ctx) }
+    val chosen = if (vm.appsMode == "only") vm.apps else vm.excluded
+    val save: (Set<String>) -> Unit = { if (vm.appsMode == "only") vm.saveApps(it) else vm.saveExcluded(it) }
     OutlinedButton(onClick = { open = true }, modifier = Modifier.fillMaxWidth()) {
-        Text(if (vm.apps.isEmpty()) "Приложения: все через VPN" else "Через VPN только: ${vm.apps.size} прил.")
+        Text(when (vm.appsMode) {
+            "only" -> "Через VPN только: ${vm.apps.size} прил."
+            "exclude" -> "Без VPN: ${vm.excluded.size} прил."
+            else -> "Приложения: все через VPN"
+        })
     }
     if (open) AlertDialog(
         onDismissRequest = { open = false },
         confirmButton = { TextButton(onClick = { open = false }) { Text("Готово") } },
-        dismissButton = { TextButton(onClick = { vm.saveApps(emptySet()) }) { Text("Все приложения") } },
-        title = { Text("Через VPN пойдут:") },
+        title = { Text("Приложения и VPN") },
         text = {
-            LazyColumn(Modifier.heightIn(max = 420.dp)) {
-                items(list) { (pkg, label) ->
-                    Row(Modifier.fillMaxWidth(), verticalAlignment = Alignment.CenterVertically) {
-                        Checkbox(checked = pkg in vm.apps, onCheckedChange = { on -> vm.saveApps(if (on) vm.apps + pkg else vm.apps - pkg) })
-                        Text(label)
+            Column {
+                Row(Modifier.fillMaxWidth(), horizontalArrangement = Arrangement.spacedBy(4.dp)) {
+                    listOf("all" to "Все", "exclude" to "Кроме…", "only" to "Только…").forEach { (m, t) ->
+                        if (vm.appsMode == m) Button(onClick = { vm.changeAppsMode(m) }, contentPadding = PaddingValues(horizontal = 10.dp)) { Text(t, fontSize = 13.sp) }
+                        else OutlinedButton(onClick = { vm.changeAppsMode(m) }, contentPadding = PaddingValues(horizontal = 10.dp)) { Text(t, fontSize = 13.sp) }
                     }
                 }
+                Text(when (vm.appsMode) {
+                    "exclude" -> "Всё идёт через VPN, кроме отмеченных приложений — они работают напрямую."
+                    "only" -> "Через VPN идут только отмеченные приложения, остальные — напрямую."
+                    else -> "Все приложения идут через VPN."
+                }, color = Muted, fontSize = 12.sp, modifier = Modifier.padding(vertical = 6.dp))
+                if (vm.appsMode != "all") {
+                    Row(horizontalArrangement = Arrangement.spacedBy(4.dp)) {
+                        TextButton(onClick = { save(chosen + AppRules.russian(list)) }) { Text("+ Российские", fontSize = 13.sp) }
+                        TextButton(onClick = { save(chosen + AppRules.banks(list)) }) { Text("+ Банки", fontSize = 13.sp) }
+                        TextButton(onClick = { save(emptySet()) }) { Text("Сбросить", fontSize = 13.sp) }
+                    }
+                    OutlinedTextField(value = query, onValueChange = { query = it }, singleLine = true, label = { Text("Поиск") }, modifier = Modifier.fillMaxWidth())
+                    LazyColumn(Modifier.heightIn(max = 340.dp)) {
+                        items(list.filter { query.isBlank() || it.second.contains(query, ignoreCase = true) }) { (pkg, label) ->
+                            Row(Modifier.fillMaxWidth(), verticalAlignment = Alignment.CenterVertically) {
+                                Checkbox(checked = pkg in chosen, onCheckedChange = { on -> save(if (on) chosen + pkg else chosen - pkg) })
+                                Text(label)
+                            }
+                        }
+                    }
+                }
+            }
+        },
+    )
+}
+
+@Composable
+private fun SitesEditor(vm: MainVm) {
+    var open by remember { mutableStateOf(false) }
+    var vpn by remember { mutableStateOf(vm.sitesVpn) }
+    var direct by remember { mutableStateOf(vm.sitesDirect) }
+    val n = XrayConfig.cleanDomains(vm.sitesVpn).size + XrayConfig.cleanDomains(vm.sitesDirect).size
+    OutlinedButton(onClick = { vpn = vm.sitesVpn; direct = vm.sitesDirect; open = true }, modifier = Modifier.fillMaxWidth()) {
+        Text(if (n == 0) "Свои сайты: правила не заданы" else "Свои сайты: правил $n")
+    }
+    if (open) AlertDialog(
+        onDismissRequest = { open = false },
+        confirmButton = { TextButton(onClick = { vm.saveSites(vpn, direct); open = false }) { Text("Сохранить") } },
+        dismissButton = { TextButton(onClick = { open = false }) { Text("Отмена") } },
+        title = { Text("Свои сайты") },
+        text = {
+            Column(verticalArrangement = Arrangement.spacedBy(8.dp)) {
+                Text("Домены по одному в строке или через запятую. Правила важнее выбранного режима и действуют на сайт вместе с поддоменами. Переподключитесь после изменения.", color = Muted, fontSize = 12.sp)
+                OutlinedTextField(value = vpn, onValueChange = { vpn = it }, label = { Text("Всегда через VPN") }, modifier = Modifier.fillMaxWidth(), minLines = 3)
+                OutlinedTextField(value = direct, onValueChange = { direct = it }, label = { Text("Всегда напрямую (без VPN)") }, modifier = Modifier.fillMaxWidth(), minLines = 3)
             }
         },
     )
@@ -435,7 +494,7 @@ private fun SettingsDialog(vm: MainVm, onClose: () -> Unit) {
                 TextButton(onClick = { ctx.startActivity(Intent(Intent.ACTION_VIEW, Uri.parse(Api.BOT))) }) { Text("Открыть бота (оплата, друзья, бонусы)") }
                 TextButton(onClick = { Diag.share(ctx) }) { Text("Отправить журнал разработчику") }
                 TextButton(onClick = { vm.logout(); onClose() }) { Text("Выйти из аккаунта", color = Color(0xFFFF5D6C)) }
-                Text("Coral VPN 0.4", color = Muted, fontSize = 12.sp)
+                Text("Coral VPN 0.7", color = Muted, fontSize = 12.sp)
             }
         },
     )

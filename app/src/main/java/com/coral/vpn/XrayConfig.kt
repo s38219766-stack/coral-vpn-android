@@ -17,7 +17,19 @@ object XrayConfig {
         "geosite:notion", "geosite:medium", "geosite:signal", "geosite:telegram", "geosite:whatsapp",
     )
 
-    fun build(s: Server, mode: RouteMode = RouteMode.RU_DIRECT, adblock: Boolean = false, mobile: Boolean = false): String {
+    // Российские сайты и сервисы напрямую. Имена geosite проверены по geosite.dat из Xray-core v24.12.31.
+    private val RU_DOMAINS = listOf(
+        "domain:ru", "domain:su", "domain:xn--p1ai", "geosite:category-ru", "geosite:yandex", "geosite:vk",
+        "geosite:mailru", "geosite:ok", "geosite:category-gov-ru",
+        // сервисы на не-российских доменах: банки, маркетплейсы, CDN
+        "domain:sberbank.com", "domain:tinkoff.com", "domain:vtb.com", "domain:alfabank.com", "domain:2gis.com",
+        "domain:ozon.ru", "domain:ozone.ru", "domain:ozonusercontent.com", "domain:wbstatic.net", "domain:avito.st",
+        "domain:userapi.com", "domain:vk-cdn.net", "domain:vkuser.net", "domain:mycdn.me", "domain:yandex.net",
+        "domain:yandex.com", "domain:yastatic.net", "domain:rustore.ru", "domain:mts.ru",
+    )
+
+    fun build(s: Server, mode: RouteMode = RouteMode.RU_DIRECT, adblock: Boolean = false, mobile: Boolean = false, fragment: Boolean = false,
+              viaVpn: List<String> = emptyList(), direct: List<String> = emptyList()): String {
         val root = JSONObject()
         root.put("log", JSONObject().put("loglevel", "warning"))
         root.put("dns", JSONObject().put("servers", JSONArray(listOf("1.1.1.1", "8.8.8.8"))))
@@ -25,17 +37,23 @@ object XrayConfig {
             JSONObject()
                 .put("tag", "socks").put("listen", "127.0.0.1").put("port", SOCKS_PORT).put("protocol", "socks")
                 .put("settings", JSONObject().put("udp", true))
-                .put("sniffing", JSONObject().put("enabled", true).put("destOverride", JSONArray(listOf("http", "tls", "quic"))))
+                .put("sniffing", JSONObject().put("enabled", true).put("destOverride", JSONArray(listOf("http", "tls", "quic"))).put("routeOnly", true))
         ))
         root.put("outbounds", JSONArray()
-            .put(proxy(s, mobile))
+            .put(proxy(s, mobile, fragment))
             .put(JSONObject().put("tag", "direct").put("protocol", "freedom"))
-            .put(JSONObject().put("tag", "block").put("protocol", "blackhole")))
-        root.put("routing", routing(mode, adblock, mobile))
+            .put(JSONObject().put("tag", "block").put("protocol", "blackhole"))
+            .apply { if (fragment) put(fragmentOutbound()) })
+        root.put("routing", routing(mode, adblock, mobile, viaVpn, direct))
         return root.toString(2)
     }
 
-    private fun proxy(s: Server, mobile: Boolean = false): JSONObject {
+    /** Выход, который режет первый пакет TLS на мелкие куски: фильтры не успевают собрать его и разобрать. */
+    private fun fragmentOutbound() = JSONObject().put("tag", "fragment").put("protocol", "freedom")
+        .put("settings", JSONObject().put("fragment", JSONObject()
+            .put("packets", "tlshello").put("length", "100-200").put("interval", "10-20")))
+
+    private fun proxy(s: Server, mobile: Boolean = false, fragment: Boolean = false): JSONObject {
         val user = JSONObject().put("id", s.uuid).put("encryption", "none")
         if (s.flow.isNotEmpty()) user.put("flow", s.flow)
         val stream = JSONObject().put("network", s.network).put("security", s.security)
@@ -63,10 +81,14 @@ object XrayConfig {
             stream.put("xhttpSettings", xh)
         }
         // Мобильный режим: без задержки отправки мелких пакетов и (для WS) объединение соединений в одно
-        if (mobile) stream.put("sockopt", JSONObject()
-            .put("tcpNoDelay", true)
-            .put("tcpKeepAliveInterval", 30)   // держим соединение «живым» для NAT оператора
-            .put("tcpKeepAliveIdle", 30))
+        if (mobile || fragment) {
+            val sock = JSONObject()
+            if (mobile) sock.put("tcpNoDelay", true)
+                .put("tcpKeepAliveInterval", 30)   // держим соединение «живым» для NAT оператора
+                .put("tcpKeepAliveIdle", 30)
+            if (fragment) sock.put("dialerProxy", "fragment")
+            stream.put("sockopt", sock)
+        }
         val out = JSONObject().put("tag", "proxy").put("protocol", "vless")
             .put("settings", JSONObject().put("vnext", JSONArray().put(
                 JSONObject().put("address", s.host).put("port", s.port).put("users", JSONArray().put(user)))))
@@ -77,18 +99,26 @@ object XrayConfig {
         return out
     }
 
-    private fun routing(mode: RouteMode, adblock: Boolean, mobile: Boolean = false): JSONObject {
+    /** Из введённого текста («site.com, https://a.b/c», по строкам или через запятую) делает правила domain:… */
+    fun cleanDomains(text: String): List<String> = text.lowercase().split(Regex("[\\s,;]+"))
+        .map { it.removePrefix("https://").removePrefix("http://").removePrefix("www.").substringBefore("/").substringBefore(":").trim('.') }
+        .filter { it.matches(Regex("[a-z0-9-]+(\\.[a-z0-9-]+)+")) }.distinct().take(200)
+
+    private fun routing(mode: RouteMode, adblock: Boolean, mobile: Boolean = false, viaVpn: List<String> = emptyList(), direct: List<String> = emptyList()): JSONObject {
         val rules = JSONArray()
         if (adblock) rules.put(rule("block").put("domain", JSONArray(listOf("geosite:category-ads-all"))))
         // Мобильный режим: QUIC (UDP 443) блокируем, чтобы браузеры и приложения перешли на TCP —
         // он стабильнее на мобильных сетях с потерями и нередко быстрее
         if (mobile) rules.put(rule("block").put("network", "udp").put("port", "443"))
+        // Свои списки пользователя важнее любого режима
+        if (viaVpn.isNotEmpty()) rules.put(rule("proxy").put("domain", JSONArray(viaVpn.map { "domain:$it" })))
+        if (direct.isNotEmpty()) rules.put(rule("direct").put("domain", JSONArray(direct.map { "domain:$it" })))
         // Локальные адреса всегда напрямую
         rules.put(rule("direct").put("ip", JSONArray(listOf("geoip:private"))))
         when (mode) {
             RouteMode.RU_DIRECT -> {
                 // Российские сайты — напрямую, остальное — через VPN
-                rules.put(rule("direct").put("domain", JSONArray(listOf("regexp:\\.ru$", "regexp:\\.su$", "regexp:\\.xn--p1ai$"))))
+                rules.put(rule("direct").put("domain", JSONArray(RU_DOMAINS)))
                 rules.put(rule("direct").put("ip", JSONArray(listOf("geoip:ru"))))
                 rules.put(rule("proxy").put("network", "tcp,udp"))
             }

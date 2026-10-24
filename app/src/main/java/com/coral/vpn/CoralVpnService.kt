@@ -22,6 +22,7 @@ class CoralVpnService : VpnService() {
         const val EXTRA_CONFIGS = "configs"
         const val EXTRA_NAMES = "names"
         const val EXTRA_APPS = "apps"
+        const val EXTRA_APPS_MODE = "apps_mode"
         const val EXTRA_MOBILE = "mobile"
         const val EXTRA_KEYS = "keys"
         const val EXTRA_AUTO = "auto"
@@ -37,19 +38,20 @@ class CoralVpnService : VpnService() {
         val configs = intent?.getStringArrayExtra(EXTRA_CONFIGS)?.toList() ?: return START_NOT_STICKY
         val names = intent.getStringArrayExtra(EXTRA_NAMES)?.toList().orEmpty()
         val apps = intent.getStringArrayExtra(EXTRA_APPS)?.toList().orEmpty()
+        val appsMode = intent.getStringExtra(EXTRA_APPS_MODE) ?: if (apps.isEmpty()) "exclude" else "only"
         val mobile = intent.getBooleanExtra(EXTRA_MOBILE, false)
         val keys = intent.getStringArrayExtra(EXTRA_KEYS)?.toList().orEmpty()
         val auto = intent.getBooleanExtra(EXTRA_AUTO, false)
         Diag.clear()
-        Diag.log("onStartCommand, приложений в списке: ${apps.size}")
+        Diag.log("onStartCommand, приложений в списке: ${apps.size}, режим: $appsMode")
         startForegroundCompat()
         state.value = VpnState.CONNECTING
         message.value = "Подключение…"
-        Thread { runCatching { start(configs, names, keys, auto, apps, mobile) }.onFailure { fail(it) } }.start()
+        Thread { runCatching { start(configs, names, keys, auto, apps, appsMode, mobile) }.onFailure { fail(it) } }.start()
         return START_NOT_STICKY
     }
 
-    private fun start(configs0: List<String>, names0: List<String>, keys0: List<String>, auto: Boolean, apps: List<String>, mobile: Boolean) {
+    private fun start(configs0: List<String>, names0: List<String>, keys0: List<String>, auto: Boolean, apps: List<String>, appsMode: String, mobile: Boolean) {
         val mtu = if (mobile) 1400 else 8500 // на мобильных сетях меньший MTU избавляет от потерь крупных пакетов
         Diag.log("шаг 1: копирование geoip/geosite")
         val assets = File(filesDir, "xray-assets").apply { mkdirs() }
@@ -97,10 +99,12 @@ class CoralVpnService : VpnService() {
             .addAddress("fc00::1", 128)
             .addRoute("::", 0)
             .addDnsServer("1.1.1.1")
-        if (apps.isEmpty()) {
-            builder.addDisallowedApplication(packageName) // иначе трафик самого Xray зациклится
-        } else {
+        if (appsMode == "only" && apps.isNotEmpty()) {
             apps.filter { it != packageName }.forEach { runCatching { builder.addAllowedApplication(it) } }
+        } else {
+            builder.addDisallowedApplication(packageName) // иначе трафик самого Xray зациклится
+            // Приложения из списка (банки, выбранные пользователем) вообще не попадают в туннель
+            apps.filter { it != packageName }.forEach { runCatching { builder.addDisallowedApplication(it) } }
         }
         Diag.log("шаг 4: создание VPN-интерфейса")
         val fd = builder.establish() ?: error("система не выдала VPN-интерфейс")

@@ -126,4 +126,54 @@ class CoreTest {
         assertEquals(listOf("https://coralsvobod.duckdns.org/sub/abc123", "https://backup.example.com/sub/abc123"), c)
         Api.setMirrors(emptyList())
     }
+
+    @Test fun fragmentAddsDialerProxyAndFreedomOutbound() {
+        val on = JSONObject(XrayConfig.build(Subscription.parseVless(reality), RouteMode.ALL, fragment = true))
+        val outs = on.getJSONArray("outbounds")
+        assertEquals("fragment", outs.getJSONObject(0).getJSONObject("streamSettings").getJSONObject("sockopt").getString("dialerProxy"))
+        val frag = (0 until outs.length()).map { outs.getJSONObject(it) }.first { it.getString("tag") == "fragment" }
+        assertEquals("tlshello", frag.getJSONObject("settings").getJSONObject("fragment").getString("packets"))
+        val off = JSONObject(XrayConfig.build(Subscription.parseVless(reality), RouteMode.ALL))
+        assertFalse(off.getJSONArray("outbounds").toString().contains("fragment"))
+        // вместе с мобильным режимом настройки сокета не затирают друг друга
+        val both = JSONObject(XrayConfig.build(Subscription.parseVless(ws), RouteMode.ALL, mobile = true, fragment = true))
+        val sock = both.getJSONArray("outbounds").getJSONObject(0).getJSONObject("streamSettings").getJSONObject("sockopt")
+        assertTrue(sock.getBoolean("tcpNoDelay")); assertEquals("fragment", sock.getString("dialerProxy"))
+    }
+
+    @Test fun bankAppsAreRecognized() {
+        assertTrue(AppRules.isBank("ru.sberbankmobile", "СберБанк Онлайн"))
+        assertTrue(AppRules.isBank("com.idamob.tinkoff.android", "Тинькофф"))
+        assertTrue(AppRules.isBank("ru.rostel", "Госуслуги"))
+        assertTrue(AppRules.isBank("some.unknown.pkg", "Банк Открытие"))   // по названию
+        assertFalse(AppRules.isBank("org.telegram.messenger", "Telegram"))
+        assertFalse(AppRules.isBank("com.whatsapp", "WhatsApp"))
+    }
+
+    @Test fun russianAppsDetectedByPrefixOrName() {
+        assertTrue(AppRules.isRussian("com.yandex.browser", "Яндекс Браузер"))
+        assertTrue(AppRules.isRussian("com.vkontakte.android", "VK"))
+        assertTrue(AppRules.isRussian("ru.ozon.app.android", "Ozon"))
+        assertFalse(AppRules.isRussian("com.google.android.youtube", "YouTube"))
+        val apps = listOf("ru.rostel" to "Госуслуги", "com.whatsapp" to "WhatsApp")
+        assertEquals(setOf("ru.rostel"), AppRules.russian(apps))
+    }
+
+    @Test fun ruDirectKnowsRussianServicesAndRoutesBySniffedDomain() {
+        val c = JSONObject(XrayConfig.build(Subscription.parseVless(reality), RouteMode.RU_DIRECT))
+        val rules = c.getJSONObject("routing").getJSONArray("rules").toString()
+        for (x in listOf("geosite:category-ru", "geosite:yandex", "geosite:vk", "domain:sberbank.com", "domain:userapi.com", "geoip:ru")) assertTrue(x, rules.contains(x))
+        val sniff = c.getJSONArray("inbounds").getJSONObject(0).getJSONObject("sniffing")
+        assertTrue(sniff.getBoolean("routeOnly"))
+    }
+
+    @Test fun customSitesAreCleanedAndComeFirst() {
+        assertEquals(listOf("example.com", "bank.ru", "a-b.org"), XrayConfig.cleanDomains("https://www.Example.com/path, bank.ru:443\n a-b.org; junk ../x"))
+        val c = JSONObject(XrayConfig.build(Subscription.parseVless(reality), RouteMode.RU_DIRECT, viaVpn = listOf("example.com"), direct = listOf("bank.ru")))
+        val rules = c.getJSONObject("routing").getJSONArray("rules")
+        assertEquals("proxy", rules.getJSONObject(0).getString("outboundTag"))
+        assertTrue(rules.getJSONObject(0).toString().contains("domain:example.com"))
+        assertEquals("direct", rules.getJSONObject(1).getString("outboundTag"))
+        assertTrue(rules.getJSONObject(1).toString().contains("domain:bank.ru"))
+    }
 }
