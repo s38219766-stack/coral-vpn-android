@@ -3,6 +3,10 @@ on: [push, workflow_dispatch]
 jobs:
   build:
     runs-on: ubuntu-latest
+    env:
+      KEYSTORE_B64: ${{ secrets.KEYSTORE_B64 }}
+      KEYSTORE_PASS: ${{ secrets.KEYSTORE_PASS }}
+      UPLOAD_TOKEN: ${{ secrets.APP_UPLOAD_TOKEN }}
     steps:
       - uses: actions/checkout@v4
       - uses: actions/setup-java@v4
@@ -26,8 +30,27 @@ jobs:
           echo 'include $(call all-subdir-makefiles)' > jni/Android.mk
           "$ANDROID_NDK_LATEST_HOME/ndk-build" NDK_PROJECT_PATH=. APP_BUILD_SCRIPT=jni/Android.mk APP_ABI=arm64-v8a APP_PLATFORM=android-26 "APP_CFLAGS=-O3 -DPKGNAME=com/coral/vpn" "APP_LDFLAGS=-Wl,--build-id=none"
           cp libs/arm64-v8a/libhev-socks5-tunnel.so ../app/src/main/jniLibs/arm64-v8a/
-      - run: gradle :app:testDebugUnitTest :app:assembleDebug --no-daemon
+      - name: Тесты
+        run: gradle :app:testDebugUnitTest --no-daemon
+      - name: Ключ подписи
+        if: env.KEYSTORE_B64 != ''
+        run: |
+          echo "$KEYSTORE_B64" | base64 -d > "$RUNNER_TEMP/coral.p12"
+          echo "KEYSTORE_PATH=$RUNNER_TEMP/coral.p12" >> "$GITHUB_ENV"
+      - name: Сборка (release, подписана своим ключом)
+        if: env.KEYSTORE_B64 != ''
+        run: gradle :app:assembleRelease -Pvc=${{ github.run_number }} --no-daemon
+      - name: Сборка (debug, ключа нет)
+        if: env.KEYSTORE_B64 == ''
+        run: gradle :app:assembleDebug -Pvc=${{ github.run_number }} --no-daemon
+      - name: Публикация на сервер (само появится в приложении)
+        if: env.UPLOAD_TOKEN != '' && github.ref_name == github.event.repository.default_branch
+        run: |
+          APK=$(ls app/build/outputs/apk/*/*.apk | head -1)
+          VER=$(grep -oP 'versionName = "\K[^"]+' app/build.gradle.kts)
+          curl -fsS --max-time 600 -X POST -H "X-Upload-Token: $UPLOAD_TOKEN" --data-binary @"$APK" \
+            "https://coralsvobod.duckdns.org/api/app/upload?version=$VER&vc=${{ github.run_number }}"
       - uses: actions/upload-artifact@v4
         with:
           name: coral-vpn-debug-apk
-          path: app/build/outputs/apk/debug/*.apk
+          path: app/build/outputs/apk/*/*.apk
