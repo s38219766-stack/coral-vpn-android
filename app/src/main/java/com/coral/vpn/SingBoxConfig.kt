@@ -22,7 +22,7 @@ object SingBoxConfig {
             }
             "ss2022" -> {
                 outbounds.put(JSONObject().put("type", "shadowsocks").put("tag", "out")
-                    .put("server", s.host).put("server_port", s.port).put("method", s.ssMethod).put("password", s.ssPassword))
+                    .put("server", s.host).put("server_port", s.port).put("method", s.ssMethod).put("password", s.secret))
                 final = "out"
             }
             "tuic" -> {
