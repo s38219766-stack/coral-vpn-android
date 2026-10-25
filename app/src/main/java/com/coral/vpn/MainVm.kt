@@ -174,6 +174,7 @@ class MainVm(app: Application) : AndroidViewModel(app) {
 fun Server.transportKey(): String = when {
     kind == "hysteria2" -> "hysteria2"
     kind == "tuic" -> "tuic"
+    kind == "ss2022" -> "ss2022"
     kind == "shadowtls" -> "shadowtls"
     network == "ws" -> "ws"
     network == "xhttp" -> "xhttp"

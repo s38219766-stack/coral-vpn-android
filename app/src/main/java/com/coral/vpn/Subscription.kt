@@ -26,6 +26,7 @@ data class Server(
     val secret: String = "",    // пароль Hysteria2 / Shadow-TLS
     val ssMethod: String = "",  // Shadow-TLS: метод Shadowsocks внутри
     val ssPassword: String = "",
+    val ports: String = "",     // Hysteria2: диапазон портов для прыжков, например 20000:30000
 )
 
 object Subscription {
@@ -36,13 +37,13 @@ object Subscription {
             runCatching {
                 val o = arr.getJSONObject(i)
                 val kind = o.getString("kind")
-                if (kind != "hysteria2" && kind != "shadowtls" && kind != "tuic") return@runCatching null
+                if (kind != "hysteria2" && kind != "shadowtls" && kind != "tuic" && kind != "ss2022") return@runCatching null
                 Server(
                     name = o.getString("name"), uuid = o.optString("uuid"), host = o.getString("host"), port = o.getInt("port"),
                     network = "tcp", security = "none", sni = o.optString("sni"), fingerprint = "chrome", publicKey = "", shortId = "",
                     flow = "", path = "", hostHeader = "", alpn = emptyList(),
                     kind = kind, secret = o.getString("password"),
-                    ssMethod = o.optString("ss_method"), ssPassword = o.optString("ss_password"),
+                    ssMethod = o.optString("ss_method"), ssPassword = o.optString("ss_password"), ports = o.optString("ports"),
                 )
             }.getOrNull()
         }

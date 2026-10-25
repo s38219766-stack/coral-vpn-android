@@ -230,6 +230,21 @@ class CoreTest {
         assertEquals(4443, o.getInt("server_port"))
     }
 
+    @Test fun hysteria2PortHoppingAndPlainShadowsocks() {
+        val json = """{"servers":[
+            {"kind":"hysteria2","name":"h","host":"203.0.113.5","port":443,"password":"pw","sni":"example.org","ports":"20000:30000"},
+            {"kind":"ss2022","name":"s","host":"203.0.113.5","port":8388,"password":"a:b","ss_method":"2022-blake3-aes-128-gcm"}]}"""
+        val (hy, ss) = Subscription.parseExtra(json)
+        val h = JSONObject(SingBoxConfig.build(hy)!!).getJSONArray("outbounds").getJSONObject(0)
+        assertEquals("20000:30000", h.getJSONArray("server_ports").getString(0))
+        assertEquals("30s", h.getString("hop_interval"))
+        assertEquals("ss2022", ss.transportKey())
+        val o = JSONObject(SingBoxConfig.build(ss)!!).getJSONArray("outbounds").getJSONObject(0)
+        assertEquals("shadowsocks", o.getString("type"))
+        assertEquals(8388, o.getInt("server_port"))
+        assertEquals("a:b", o.getString("password"))
+    }
+
     @Test fun extraServersGoThroughLocalSocksInXray() {
         val hy = Subscription.parseExtra(extraJson)[0]
         val c = JSONObject(XrayConfig.build(hy, RouteMode.RU_DIRECT, fragment = true))

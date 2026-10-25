@@ -12,9 +12,17 @@ object SingBoxConfig {
         val final: String
         when (s.kind) {
             "hysteria2" -> {
-                outbounds.put(JSONObject().put("type", "hysteria2").put("tag", "out")
+                val hy = JSONObject().put("type", "hysteria2").put("tag", "out")
                     .put("server", s.host).put("server_port", s.port).put("password", s.secret)
-                    .put("tls", JSONObject().put("enabled", true).put("server_name", s.sni).put("alpn", JSONArray(listOf("h3")))))
+                    .put("tls", JSONObject().put("enabled", true).put("server_name", s.sni).put("alpn", JSONArray(listOf("h3"))))
+                // Прыжки по портам: оператору сложнее резать один UDP-порт
+                if (s.ports.matches(Regex("\\d+:\\d+"))) hy.put("server_ports", JSONArray(listOf(s.ports))).put("hop_interval", "30s")
+                outbounds.put(hy)
+                final = "out"
+            }
+            "ss2022" -> {
+                outbounds.put(JSONObject().put("type", "shadowsocks").put("tag", "out")
+                    .put("server", s.host).put("server_port", s.port).put("method", s.ssMethod).put("password", s.ssPassword))
                 final = "out"
             }
             "tuic" -> {
