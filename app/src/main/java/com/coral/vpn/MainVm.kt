@@ -29,6 +29,7 @@ class MainVm(app: Application) : AndroidViewModel(app) {
     var appsMode by mutableStateOf(prefs.getString("apps_mode", null) ?: if (prefs.getStringSet("apps", emptySet()).isNullOrEmpty()) "all" else "only")
     var sitesVpn by mutableStateOf(prefs.getString("sites_vpn", "") ?: "")
     var sitesDirect by mutableStateOf(prefs.getString("sites_direct", "") ?: "")
+    var countries by mutableStateOf(prefs.getStringSet("countries", emptySet()) ?: emptySet())
     var banksDirect by mutableStateOf(prefs.getBoolean("banks_direct", true))
     var pick by mutableStateOf(prefs.getString("pick", "") ?: "") // "" = «Авто»
     var adblock by mutableStateOf(prefs.getBoolean("adblock", false))
@@ -48,7 +49,7 @@ class MainVm(app: Application) : AndroidViewModel(app) {
         // Серверы из последней удачной загрузки: приложение работает, даже если домен сейчас недоступен
         prefs.getString("sub_cache", null)?.let { raw ->
             runCatching {
-                servers = Subscription.parse(raw)
+                servers = Subscription.parse(raw) + Subscription.parseExtra(prefs.getString("extra_cache", "") ?: "{}")
                 info = prefs.getString("sub_info", null)?.let { Api.parseUserInfo(it) }
             }
         }
@@ -61,6 +62,7 @@ class MainVm(app: Application) : AndroidViewModel(app) {
     fun changeAppsMode(m: String) { appsMode = m; prefs.edit().putString("apps_mode", m).apply() }
     fun saveExcluded(v: Set<String>) { excluded = v; prefs.edit().putStringSet("excluded", v).apply() }
     fun saveSites(vpn: String, direct: String) { sitesVpn = vpn; sitesDirect = direct; prefs.edit().putString("sites_vpn", vpn).putString("sites_direct", direct).apply() }
+    fun saveCountries(v: Set<String>) { countries = v; prefs.edit().putStringSet("countries", v).apply() }
     fun changeBanks(v: Boolean) { banksDirect = v; prefs.edit().putBoolean("banks_direct", v).apply() }
     fun saveApps(v: Set<String>) { apps = v; prefs.edit().putStringSet("apps", v).apply() }
     fun choose(name: String) { pick = name; prefs.edit().putString("pick", name).apply() }
@@ -73,7 +75,7 @@ class MainVm(app: Application) : AndroidViewModel(app) {
 
     fun logout() {
         subUrl = ""; servers = emptyList(); info = null; pick = ""
-        prefs.edit().remove("sub").remove("pick").remove("sub_cache").remove("sub_info").apply()
+        prefs.edit().remove("sub").remove("pick").remove("sub_cache").remove("sub_info").remove("extra_cache").apply()
         login = LoginState.IDLE
     }
 
@@ -98,7 +100,12 @@ class MainVm(app: Application) : AndroidViewModel(app) {
             runCatching { Api.fetchRaw(subUrl) }
                 .onSuccess { (body, header) ->
                     val list = Subscription.parse(body)
-                    servers = list; info = header?.let { Api.parseUserInfo(it) }
+                    // Hysteria2 и Shadow-TLS: если сервер их не отдал, остаётся обычный список
+                    val extraJson = runCatching { Api.fetchExtra(subUrl) }.getOrNull()
+                    val extra = extraJson?.let { runCatching { Subscription.parseExtra(it) }.getOrNull() }
+                        ?: Subscription.parseExtra(prefs.getString("extra_cache", "") ?: "{}")
+                    if (extraJson != null && extra.isNotEmpty()) prefs.edit().putString("extra_cache", extraJson).apply()
+                    servers = list + extra; info = header?.let { Api.parseUserInfo(it) }
                     notice = if (list.isEmpty()) "В подписке нет серверов — проверьте срок действия" else ""
                     if (list.isNotEmpty()) prefs.edit().putString("sub_cache", body).putString("sub_info", header).apply()
                     runCatching { Api.fetchMirrors() }.onSuccess { m ->
@@ -141,6 +148,9 @@ class MainVm(app: Application) : AndroidViewModel(app) {
         if (servers.isEmpty()) return null
         val first = servers.firstOrNull { it.name == pick } ?: servers.first()
         val ordered = listOf(first) + servers.filter { it != first }
+        // «Авто»: если обычные способы не подключились, в конце пробуем те же TCP-серверы с дроблением TLS-рукопожатия
+        val fragVariants = if (pick.isBlank() && !fragment) ordered.filter { it.kind == "vless" } else emptyList()
+        fun cfg(sv: Server, frag: Boolean) = XrayConfig.build(sv, mode, adblock, mobile, frag, XrayConfig.cleanDomains(sitesVpn), XrayConfig.cleanDomains(sitesDirect), countries.toList())
         // Банки и госуслуги по умолчанию всегда идут мимо VPN — на уровне системы, а не по адресам сайтов
         val banks = if (banksDirect) AppRules.banks(AppRules.installed(ctx)) else emptySet()
         val (appListMode, appList) = when {
@@ -149,9 +159,10 @@ class MainVm(app: Application) : AndroidViewModel(app) {
             else -> "exclude" to banks
         }
         return Intent(ctx, CoralVpnService::class.java)
-            .putExtra(CoralVpnService.EXTRA_CONFIGS, ordered.map { XrayConfig.build(it, mode, adblock, mobile, fragment, XrayConfig.cleanDomains(sitesVpn), XrayConfig.cleanDomains(sitesDirect)) }.toTypedArray())
-            .putExtra(CoralVpnService.EXTRA_NAMES, ordered.map { it.title() }.toTypedArray())
-            .putExtra(CoralVpnService.EXTRA_KEYS, ordered.map { it.transportKey() }.toTypedArray())
+            .putExtra(CoralVpnService.EXTRA_CONFIGS, (ordered.map { cfg(it, fragment) } + fragVariants.map { cfg(it, true) }).toTypedArray())
+            .putExtra(CoralVpnService.EXTRA_NAMES, (ordered.map { it.title() } + fragVariants.map { it.title() + " + дробление" }).toTypedArray())
+            .putExtra(CoralVpnService.EXTRA_KEYS, (ordered.map { it.transportKey() } + fragVariants.map { "fragment" }).toTypedArray())
+            .putExtra(CoralVpnService.EXTRA_SB, (ordered.map { SingBoxConfig.build(it) ?: "" } + fragVariants.map { "" }).toTypedArray())
             .putExtra(CoralVpnService.EXTRA_AUTO, pick.isBlank())
             .putExtra(CoralVpnService.EXTRA_APPS, appList.toTypedArray())
             .putExtra(CoralVpnService.EXTRA_APPS_MODE, appListMode)
@@ -161,18 +172,25 @@ class MainVm(app: Application) : AndroidViewModel(app) {
 
 /** Ключ транспорта для статистики: по нему сервер знает, что работает у какого оператора. */
 fun Server.transportKey(): String = when {
+    kind == "hysteria2" -> "hysteria2"
+    kind == "tuic" -> "tuic"
+    kind == "shadowtls" -> "shadowtls"
     network == "ws" -> "ws"
     network == "xhttp" -> "xhttp"
     name.contains("Coral RU") -> "reality_ru"
+    name.contains("Coral FI") -> "reality_fi"
     security == "reality" && port != 443 -> "reality_ip"
     else -> "reality"
 }
 
 /** Понятное название вместо технического имени из подписки. */
 fun Server.title(): String = when {
+    kind != "vless" -> name
     network == "ws" -> "Защищённый"
     network == "xhttp" -> "Запасной (XHTTP)"
     name.contains("Coral RU") -> "Через Россию"
+    name.contains("Coral FI2") -> "Финляндия 2"
+    name.contains("Coral FI") -> "Финляндия"
     security == "reality" && port != 443 -> "Резервный (по IP)"
     security == "reality" -> "Быстрый"
     else -> name

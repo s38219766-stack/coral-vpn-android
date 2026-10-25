@@ -9,6 +9,9 @@ enum class RouteMode { ALL, RU_DIRECT, BLOCKED }
 object XrayConfig {
     const val SOCKS_PORT = 10808
 
+    /** Страны, сервисы которых можно пускать напрямую: код (как в geoip.dat) и название */
+    val COUNTRIES = listOf("kz" to "Казахстан", "ge" to "Грузия", "by" to "Беларусь", "am" to "Армения", "uz" to "Узбекистан", "kg" to "Киргизия", "tj" to "Таджикистан", "az" to "Азербайджан", "md" to "Молдова")
+
     // Сервисы, которые нужно пускать через VPN в режиме «только заблокированное».
     // Все названия проверены по geosite.dat из Xray-core v24.12.31.
     private val BLOCKED = listOf(
@@ -29,7 +32,8 @@ object XrayConfig {
     )
 
     fun build(s: Server, mode: RouteMode = RouteMode.RU_DIRECT, adblock: Boolean = false, mobile: Boolean = false, fragment: Boolean = false,
-              viaVpn: List<String> = emptyList(), direct: List<String> = emptyList()): String {
+              viaVpn: List<String> = emptyList(), direct: List<String> = emptyList(),
+              countries: List<String> = emptyList()): String {
         val root = JSONObject()
         root.put("log", JSONObject().put("loglevel", "warning"))
         root.put("dns", JSONObject().put("servers", JSONArray(listOf("1.1.1.1", "8.8.8.8"))))
@@ -40,11 +44,11 @@ object XrayConfig {
                 .put("sniffing", JSONObject().put("enabled", true).put("destOverride", JSONArray(listOf("http", "tls", "quic"))).put("routeOnly", true))
         ))
         root.put("outbounds", JSONArray()
-            .put(proxy(s, mobile, fragment))
+            .put(if (s.kind == "vless") proxy(s, mobile, fragment) else socksOutbound())
             .put(JSONObject().put("tag", "direct").put("protocol", "freedom"))
             .put(JSONObject().put("tag", "block").put("protocol", "blackhole"))
-            .apply { if (fragment) put(fragmentOutbound()) })
-        root.put("routing", routing(mode, adblock, mobile, viaVpn, direct))
+            .apply { if (fragment && s.kind == "vless") put(fragmentOutbound()) })
+        root.put("routing", routing(mode, adblock, mobile, viaVpn, direct, countries))
         return root.toString(2)
     }
 
@@ -52,6 +56,11 @@ object XrayConfig {
     private fun fragmentOutbound() = JSONObject().put("tag", "fragment").put("protocol", "freedom")
         .put("settings", JSONObject().put("fragment", JSONObject()
             .put("packets", "tlshello").put("length", "100-200").put("interval", "10-20")))
+
+    /** Для Hysteria2 и Shadow-TLS трафик отдаём локальному ядру sing-box; маршрутизация, приложения и сайты остаются в Xray. */
+    private fun socksOutbound() = JSONObject().put("tag", "proxy").put("protocol", "socks")
+        .put("settings", JSONObject().put("servers", JSONArray().put(
+            JSONObject().put("address", "127.0.0.1").put("port", SingBoxConfig.SOCKS_PORT))))
 
     private fun proxy(s: Server, mobile: Boolean = false, fragment: Boolean = false): JSONObject {
         val user = JSONObject().put("id", s.uuid).put("encryption", "none")
@@ -104,7 +113,7 @@ object XrayConfig {
         .map { it.removePrefix("https://").removePrefix("http://").removePrefix("www.").substringBefore("/").substringBefore(":").trim('.') }
         .filter { it.matches(Regex("[a-z0-9-]+(\\.[a-z0-9-]+)+")) }.distinct().take(200)
 
-    private fun routing(mode: RouteMode, adblock: Boolean, mobile: Boolean = false, viaVpn: List<String> = emptyList(), direct: List<String> = emptyList()): JSONObject {
+    private fun routing(mode: RouteMode, adblock: Boolean, mobile: Boolean = false, viaVpn: List<String> = emptyList(), direct: List<String> = emptyList(), countries: List<String> = emptyList()): JSONObject {
         val rules = JSONArray()
         if (adblock) rules.put(rule("block").put("domain", JSONArray(listOf("geosite:category-ads-all"))))
         // Мобильный режим: QUIC (UDP 443) блокируем, чтобы браузеры и приложения перешли на TCP —
@@ -113,6 +122,12 @@ object XrayConfig {
         // Свои списки пользователя важнее любого режима
         if (viaVpn.isNotEmpty()) rules.put(rule("proxy").put("domain", JSONArray(viaVpn.map { "domain:$it" })))
         if (direct.isNotEmpty()) rules.put(rule("direct").put("domain", JSONArray(direct.map { "domain:$it" })))
+        // Выбранные страны (банки, сервисы, государственные сайты) идут напрямую: и по домену страны, и по её диапазонам IP
+        val known = countries.filter { c -> COUNTRIES.any { it.first == c } }
+        if (known.isNotEmpty()) {
+            rules.put(rule("direct").put("domain", JSONArray(known.map { "domain:$it" })))
+            rules.put(rule("direct").put("ip", JSONArray(known.map { "geoip:$it" })))
+        }
         // Локальные адреса всегда напрямую
         rules.put(rule("direct").put("ip", JSONArray(listOf("geoip:private"))))
         when (mode) {

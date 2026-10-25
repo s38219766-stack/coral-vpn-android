@@ -25,6 +25,7 @@ class CoralVpnService : VpnService() {
         const val EXTRA_APPS_MODE = "apps_mode"
         const val EXTRA_MOBILE = "mobile"
         const val EXTRA_KEYS = "keys"
+        const val EXTRA_SB = "sb"
         const val EXTRA_AUTO = "auto"
         val state = MutableStateFlow(VpnState.OFF)
         val message = MutableStateFlow("")
@@ -32,6 +33,8 @@ class CoralVpnService : VpnService() {
 
     private var tun: ParcelFileDescriptor? = null
     private var xray: Process? = null
+    private var singbox: Process? = null
+    @Volatile private var generation = 0   // меняется при остановке, чтобы сторож связи прекратил работу
 
     override fun onStartCommand(intent: Intent?, flags: Int, startId: Int): Int {
         if (intent?.action == ACTION_STOP) { shutdown(); return START_NOT_STICKY }
@@ -42,16 +45,17 @@ class CoralVpnService : VpnService() {
         val mobile = intent.getBooleanExtra(EXTRA_MOBILE, false)
         val keys = intent.getStringArrayExtra(EXTRA_KEYS)?.toList().orEmpty()
         val auto = intent.getBooleanExtra(EXTRA_AUTO, false)
+        val sb = intent.getStringArrayExtra(EXTRA_SB)?.toList().orEmpty()
         Diag.clear()
         Diag.log("onStartCommand, приложений в списке: ${apps.size}, режим: $appsMode")
         startForegroundCompat()
         state.value = VpnState.CONNECTING
         message.value = "Подключение…"
-        Thread { runCatching { start(configs, names, keys, auto, apps, appsMode, mobile) }.onFailure { fail(it) } }.start()
+        Thread { runCatching { start(configs, names, keys, sb, auto, apps, appsMode, mobile) }.onFailure { fail(it) } }.start()
         return START_NOT_STICKY
     }
 
-    private fun start(configs0: List<String>, names0: List<String>, keys0: List<String>, auto: Boolean, apps: List<String>, appsMode: String, mobile: Boolean) {
+    private fun start(configs0: List<String>, names0: List<String>, keys0: List<String>, sb0: List<String>, auto: Boolean, apps: List<String>, appsMode: String, mobile: Boolean) {
         val mtu = if (mobile) 1400 else 8500 // на мобильных сетях меньший MTU избавляет от потерь крупных пакетов
         Diag.log("шаг 1: копирование geoip/geosite")
         val assets = File(filesDir, "xray-assets").apply { mkdirs() }
@@ -61,32 +65,35 @@ class CoralVpnService : VpnService() {
         }
         // «Авто»: ставим вперёд транспорты, которые у этого оператора сейчас работают чаще всего
         var configs = configs0; var names = names0; var keys = keys0
+        var sbs = if (sb0.size == configs0.size) sb0 else configs0.map { "" }
         if (keys0.size == configs0.size && auto) {
             val best = NetProbe.best(this)
             if (best.isNotEmpty()) {
                 val idx = configs0.indices.sortedBy { i -> best.indexOf(keys0[i]).let { if (it < 0) 99 else it } }
-                configs = idx.map { configs0[it] }; names = idx.map { names0.getOrElse(it) { "" } }; keys = idx.map { keys0[it] }
+                configs = idx.map { configs0[it] }; names = idx.map { names0.getOrElse(it) { "" } }; keys = idx.map { keys0[it] }; sbs = idx.map { sb0.getOrElse(it) { "" } }
                 Diag.log("порядок по статистике оператора: ${keys.joinToString()}")
             }
         }
         // Пробуем серверы по очереди, пока один не пропустит трафик
         var chosen: String? = null
+        var chosenIdx = -1
         for ((i, config) in configs.withIndex()) {
             val label = names.getOrNull(i) ?: "сервер ${i + 1}"
             message.value = "Проверка: $label"
             Diag.log("шаг 2: сервер «$label»")
             val t0 = System.currentTimeMillis()
-            val ok = runCatching { tryServer(config, assets) }.onFailure { Diag.log("ошибка: ${it.message}") }.getOrDefault(false)
+            val ok = runCatching { tryServer(config, assets, sbConfig = sbs.getOrElse(i) { "" }) }.onFailure { Diag.log("ошибка: ${it.message}") }.getOrDefault(false)
             keys.getOrNull(i)?.let { NetProbe.report(this, it, ok, (System.currentTimeMillis() - t0).toInt()) }
-            if (ok) { chosen = label; break }
+            if (ok) { chosen = label; chosenIdx = i; break }
             xray?.destroy(); xray = null
+            singbox?.destroy(); singbox = null
             Diag.log("сервер «$label» не отвечает, пробуем следующий")
         }
         if (chosen == null && configs.isNotEmpty()) {
             // Сама проверка могла ошибиться — не отказываем, а подключаемся к первому серверу как есть
             Diag.log("ни одна проверка не прошла — подключаемся к первому серверу без проверки")
-            val ok = runCatching { tryServer(configs[0], assets, verify = false) }.getOrDefault(false)
-            if (ok) chosen = (names.getOrNull(0) ?: "сервер 1") + " (без проверки)"
+            val ok = runCatching { tryServer(configs[0], assets, verify = false, sbConfig = sbs.getOrElse(0) { "" }) }.getOrDefault(false)
+            if (ok) { chosen = (names.getOrNull(0) ?: "сервер 1") + " (без проверки)"; chosenIdx = 0 }
         }
         check(chosen != null) { "не удалось запустить ядро — отправьте журнал разработчику" }
         Diag.log("шаг 3: выбран «$chosen»")
@@ -134,10 +141,52 @@ class CoralVpnService : VpnService() {
         Diag.log("шаг 6: туннель запущен, работает=${TProxyService.TProxyIsRunning()}")
         state.value = VpnState.ON
         message.value = "Подключено: $chosen"
+        if (chosenIdx >= 0) watch(configs, names, keys, sbs, assets, chosenIdx)
+    }
+
+    /**
+     * Сторож связи: если через текущий сервер трафик перестал ходить (оператор начал резать), сам
+     * переключается на следующий способ, не разрывая туннель. Туннель hev смотрит на тот же локальный порт.
+     */
+    private fun watch(configs: List<String>, names: List<String>, keys: List<String>, sbs: List<String>, assets: File, start: Int) {
+        val gen = ++generation
+        Thread {
+            var current = start
+            var fails = 0
+            while (gen == generation && state.value == VpnState.ON) {
+                runCatching { Thread.sleep(20_000) }
+                if (gen != generation || state.value != VpnState.ON) return@Thread
+                if (probe()) { fails = 0; continue }
+                if (++fails < 2) continue
+                fails = 0
+                Diag.log("сторож: связь пропала, ищем рабочий способ")
+                message.value = "Связь пропала, переключаемся…"
+                val order = (1..configs.size).map { (current + it) % configs.size }   // сначала следующие, текущий — последним
+                var found = -1
+                for (i in order) {
+                    if (gen != generation) return@Thread
+                    xray?.destroy(); xray = null
+                    singbox?.destroy(); singbox = null
+                    val label = names.getOrNull(i) ?: "сервер ${i + 1}"
+                    Diag.log("сторож: пробуем «$label»")
+                    val ok = runCatching { tryServer(configs[i], assets, sbConfig = sbs.getOrElse(i) { "" }) }.getOrDefault(false)
+                    keys.getOrNull(i)?.let { NetProbe.report(this, it, ok, 0) }
+                    if (ok) { found = i; break }
+                }
+                if (gen != generation) return@Thread
+                if (found >= 0) {
+                    current = found
+                    message.value = "Подключено: ${names.getOrNull(found) ?: "сервер ${found + 1}"}"
+                } else {
+                    message.value = "Нет связи, продолжаем пытаться…"
+                }
+            }
+        }.start()
     }
 
     /** Запускает ядро с этим конфигом и проверяет, ходит ли трафик через сервер. */
-    private fun tryServer(config: String, assets: File, verify: Boolean = true): Boolean {
+    private fun tryServer(config: String, assets: File, verify: Boolean = true, sbConfig: String = ""): Boolean {
+        if (sbConfig.isNotBlank() && !startSingBox(sbConfig)) return false
         val cfg = File(filesDir, "config.json").apply { writeText(resolveServer(config)) }
         val bin = File(applicationInfo.nativeLibraryDir, "libxray.so")
         val pb = ProcessBuilder(bin.path, "run", "-c", cfg.path).redirectErrorStream(true)
@@ -155,6 +204,24 @@ class CoralVpnService : VpnService() {
         waitForSocks(proc)
         if (!proc.isAlive) return false
         return if (verify) probe() else true
+    }
+
+    /** Hysteria2 и Shadow-TLS: запускаем sing-box, он открывает локальный SOCKS, к которому подключается Xray. */
+    private fun startSingBox(config: String): Boolean {
+        val cfg = File(filesDir, "singbox.json").apply { writeText(config) }
+        val bin = File(applicationInfo.nativeLibraryDir, "libsingbox.so")
+        if (!bin.exists()) { Diag.log("sing-box в сборке нет"); return false }
+        val proc = ProcessBuilder(bin.path, "run", "-c", cfg.path, "-D", filesDir.path).redirectErrorStream(true).start()
+        singbox = proc
+        Thread {
+            runCatching { proc.inputStream.bufferedReader().forEachLine { Diag.log("sing-box: ${it.take(300)}") } }
+        }.start()
+        repeat(40) {
+            if (!proc.isAlive) return false
+            if (runCatching { java.net.Socket("127.0.0.1", SingBoxConfig.SOCKS_PORT).use { true } }.getOrDefault(false)) return true
+            Thread.sleep(100)
+        }
+        return proc.isAlive
     }
 
     /** Ждём, пока ядро откроет локальный SOCKS-порт (обычно доли секунды), максимум 3 секунды. */
@@ -187,8 +254,9 @@ class CoralVpnService : VpnService() {
     /** У Xray на Android нет системного DNS (нет resolv.conf), поэтому подставляем IP сервера сами. */
     private fun resolveServer(config: String): String {
         val root = JSONObject(config)
-        val vnext = root.getJSONArray("outbounds").getJSONObject(0)
-            .getJSONObject("settings").getJSONArray("vnext").getJSONObject(0)
+        val settings = root.getJSONArray("outbounds").getJSONObject(0).getJSONObject("settings")
+        if (!settings.has("vnext")) return config // Hysteria2 и Shadow-TLS: адрес сервера задан в конфиге sing-box
+        val vnext = settings.getJSONArray("vnext").getJSONObject(0)
         val host = vnext.getString("address")
         if (host.any { it.isLetter() }) {
             val ip = InetAddress.getAllByName(host).filterIsInstance<Inet4Address>().firstOrNull()?.hostAddress
@@ -207,8 +275,10 @@ class CoralVpnService : VpnService() {
     }
 
     private fun shutdown() {
+        generation++
         runCatching { TProxyService.TProxyStopService() }
         xray?.destroy(); xray = null
+        singbox?.destroy(); singbox = null
         runCatching { tun?.close() }; tun = null
         if (state.value != VpnState.ERROR) state.value = VpnState.OFF
         stopForeground(STOP_FOREGROUND_REMOVE)

@@ -409,6 +409,7 @@ private fun RouteCard(vm: MainVm) {
         }
         AppsPicker(vm)
         SitesEditor(vm)
+        CountriesPicker(vm)
     }
 }
 
@@ -466,6 +467,33 @@ private fun AppsPicker(vm: MainVm) {
 }
 
 @Composable
+private fun CountriesPicker(vm: MainVm) {
+    var open by remember { mutableStateOf(false) }
+    OutlinedButton(onClick = { open = true }, modifier = Modifier.fillMaxWidth()) {
+        Text(if (vm.countries.isEmpty()) "Страны напрямую: не выбраны" else "Страны напрямую: ${vm.countries.size}")
+    }
+    if (open) AlertDialog(
+        onDismissRequest = { open = false },
+        confirmButton = { TextButton(onClick = { open = false }) { Text("Готово") } },
+        dismissButton = { TextButton(onClick = { vm.saveCountries(emptySet()) }) { Text("Сбросить") } },
+        title = { Text("Страны напрямую") },
+        text = {
+            Column {
+                Text("Сайты, банки и сервисы выбранных стран открываются без VPN — с вашего настоящего адреса. Всё остальное идёт как обычно. Переподключитесь после изменения.", color = Muted, fontSize = 12.sp)
+                LazyColumn(Modifier.heightIn(max = 340.dp)) {
+                    items(XrayConfig.COUNTRIES) { (code, name) ->
+                        Row(Modifier.fillMaxWidth(), verticalAlignment = Alignment.CenterVertically) {
+                            Checkbox(checked = code in vm.countries, onCheckedChange = { on -> vm.saveCountries(if (on) vm.countries + code else vm.countries - code) })
+                            Text(name)
+                        }
+                    }
+                }
+            }
+        },
+    )
+}
+
+@Composable
 private fun SitesEditor(vm: MainVm) {
     var open by remember { mutableStateOf(false) }
     var vpn by remember { mutableStateOf(vm.sitesVpn) }
@@ -502,7 +530,7 @@ private fun SettingsDialog(vm: MainVm, onClose: () -> Unit) {
                 TextButton(onClick = { ctx.startActivity(Intent(Intent.ACTION_VIEW, Uri.parse(Api.BOT))) }) { Text("Открыть бота (оплата, друзья, бонусы)") }
                 TextButton(onClick = { Diag.share(ctx) }) { Text("Отправить журнал разработчику") }
                 TextButton(onClick = { vm.logout(); onClose() }) { Text("Выйти из аккаунта", color = Color(0xFFFF5D6C)) }
-                Text("Coral VPN 0.7", color = Muted, fontSize = 12.sp)
+                Text("Coral VPN 0.8", color = Muted, fontSize = 12.sp)
             }
         },
     )

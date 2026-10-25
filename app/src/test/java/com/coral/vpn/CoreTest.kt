@@ -182,4 +182,73 @@ class CoreTest {
         assertEquals("reality_ru", ru.transportKey())
         assertEquals("Через Россию", ru.title())
     }
+
+    @Test fun countriesGoDirectByDomainAndIp() {
+        val c = JSONObject(XrayConfig.build(Subscription.parseVless(reality), RouteMode.ALL, countries = listOf("kz", "ge", "xx")))
+        val rules = c.getJSONObject("routing").getJSONArray("rules").toString()
+        for (x in listOf("domain:kz", "domain:ge", "geoip:kz", "geoip:ge")) assertTrue(x, rules.contains(x))
+        assertFalse("неизвестная страна не попадает в правила", rules.contains("xx"))
+        val none = JSONObject(XrayConfig.build(Subscription.parseVless(reality), RouteMode.ALL)).getJSONObject("routing").toString()
+        assertFalse(none.contains("geoip:kz"))
+    }
+
+    private val extraJson = """{"servers":[
+        {"kind":"hysteria2","name":"Быстрый UDP (Hysteria2)","host":"203.0.113.5","port":443,"password":"pw1","sni":"example.org"},
+        {"kind":"shadowtls","name":"Маска TLS (Shadow-TLS)","host":"203.0.113.5","port":8853,"password":"pw2","sni":"www.yandex.ru","ss_method":"2022-blake3-aes-128-gcm","ss_password":"a:b"},
+        {"kind":"unknown","name":"x","host":"h","port":1,"password":"p"}]}"""
+
+    @Test fun extraServersParsedAndUnknownIgnored() {
+        val list = Subscription.parseExtra(extraJson)
+        assertEquals(2, list.size)
+        assertEquals("hysteria2", list[0].transportKey())
+        assertEquals("shadowtls", list[1].transportKey())
+        assertEquals("Быстрый UDP (Hysteria2)", list[0].title())
+        assertTrue(Subscription.parseExtra("{}").isEmpty())
+    }
+
+    @Test fun singBoxConfigsForBothTransports() {
+        val (hy, st) = Subscription.parseExtra(extraJson)
+        val h = JSONObject(SingBoxConfig.build(hy)!!)
+        assertEquals("hysteria2", h.getJSONArray("outbounds").getJSONObject(0).getString("type"))
+        assertEquals(SingBoxConfig.SOCKS_PORT, h.getJSONArray("inbounds").getJSONObject(0).getInt("listen_port"))
+        val s = JSONObject(SingBoxConfig.build(st)!!)
+        val outs = s.getJSONArray("outbounds")
+        assertEquals("shadowtls", outs.getJSONObject(0).getString("type"))
+        assertEquals("stls", outs.getJSONObject(1).getString("detour"))
+        assertEquals("out", s.getJSONObject("route").getString("final"))
+        assertNull(SingBoxConfig.build(Subscription.parseVless(reality)))
+    }
+
+    @Test fun tuicServerParsedAndConfigured() {
+        val json = """{"servers":[{"kind":"tuic","name":"Запасной UDP (TUIC)","host":"203.0.113.5","port":4443,"uuid":"11111111-2222-3333-4444-555555555555","password":"pw3","sni":"example.org"}]}"""
+        val t = Subscription.parseExtra(json).single()
+        assertEquals("tuic", t.transportKey())
+        val o = JSONObject(SingBoxConfig.build(t)!!).getJSONArray("outbounds").getJSONObject(0)
+        assertEquals("tuic", o.getString("type"))
+        assertEquals("11111111-2222-3333-4444-555555555555", o.getString("uuid"))
+        assertEquals("pw3", o.getString("password"))
+        assertEquals(4443, o.getInt("server_port"))
+    }
+
+    @Test fun extraServersGoThroughLocalSocksInXray() {
+        val hy = Subscription.parseExtra(extraJson)[0]
+        val c = JSONObject(XrayConfig.build(hy, RouteMode.RU_DIRECT, fragment = true))
+        val outs = c.getJSONArray("outbounds")
+        val proxy = outs.getJSONObject(0)
+        assertEquals("socks", proxy.getString("protocol"))
+        assertEquals(SingBoxConfig.SOCKS_PORT, proxy.getJSONObject("settings").getJSONArray("servers").getJSONObject(0).getInt("port"))
+        assertFalse("фрагментация не нужна: шифрование делает sing-box", outs.toString().contains("fragment"))
+    }
+
+    @Test fun finlandNodeIsRecognized() {
+        val fi = Subscription.parseVless(reality.replace("146.103.25.67", "13.140.95.212").replace(":443?", ":8443?").replace("#Reality", "#Coral%20FI%20%28tg1%29"))
+        assertEquals("reality_fi", fi.transportKey())
+        assertEquals("Финляндия", fi.title())
+    }
+
+    @Test fun secondFinlandNodeHasOwnTitleButSameKey() {
+        val fi2 = Subscription.parseVless(reality.replace("146.103.25.67", "13.140.95.197").replace(":443?", ":8443?").replace("#Reality", "#Coral%20FI2%20%28tg1%29"))
+        assertEquals("Финляндия 2", fi2.title())
+        assertEquals("reality_fi", fi2.transportKey())
+    }
 }

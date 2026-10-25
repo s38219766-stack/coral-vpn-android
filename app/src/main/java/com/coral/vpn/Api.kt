@@ -34,6 +34,9 @@ object Api {
 
     fun appInfo(): JSONObject = JSONObject(call("GET", "$BASE/api/app-info"))
 
+    /** Дополнительные серверы (Hysteria2, Shadow-TLS) по ссылке подписки; пусто, если их нет. */
+    fun fetchExtra(subUrl: String): String = call("GET", "$BASE/api/app/extra?sub=${java.net.URLEncoder.encode(subUrl, "UTF-8")}")
+
     fun fetchMirrors(): List<String> = JSONObject(call("GET", "$BASE/api/mirrors")).getJSONArray("domains").let { a -> List(a.length()) { a.getString(it) } }
 
     private fun call(method: String, url: String): String = firstOk(url) { callOne(method, it) }
