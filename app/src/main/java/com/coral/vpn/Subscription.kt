@@ -22,10 +22,11 @@ data class Server(
     val alpn: List<String>,
     val mode: String = "",      // XHTTP: auto | packet-up | stream-up
     val extra: String = "",     // XHTTP: дополнительные параметры (JSON)
-    val kind: String = "vless", // vless | hysteria2 | tuic | shadowtls (остальные идут через ядро sing-box)
+    val kind: String = "vless", // vless | hysteria2 | tuic | ss2022 | ct | shadowtls (остальные идут через ядро sing-box)
     val secret: String = "",    // пароль Hysteria2 / Shadow-TLS
     val ssMethod: String = "",  // Shadow-TLS: метод Shadowsocks внутри
     val ssPassword: String = "",
+    val ctKey: String = "",     // Coral Transport: ключ пользователя (hex)
     val ports: String = "",     // Hysteria2: диапазон портов для прыжков, например 20000:30000
 )
 
@@ -37,13 +38,13 @@ object Subscription {
             runCatching {
                 val o = arr.getJSONObject(i)
                 val kind = o.getString("kind")
-                if (kind != "hysteria2" && kind != "shadowtls" && kind != "tuic" && kind != "ss2022") return@runCatching null
+                if (kind != "hysteria2" && kind != "shadowtls" && kind != "tuic" && kind != "ss2022" && kind != "ct") return@runCatching null
                 Server(
                     name = o.getString("name"), uuid = o.optString("uuid"), host = o.getString("host"), port = o.getInt("port"),
                     network = "tcp", security = "none", sni = o.optString("sni"), fingerprint = "chrome", publicKey = "", shortId = "",
                     flow = "", path = "", hostHeader = "", alpn = emptyList(),
                     kind = kind, secret = o.getString("password"),
-                    ssMethod = o.optString("ss_method"), ssPassword = o.optString("ss_password"), ports = o.optString("ports"),
+                    ssMethod = o.optString("ss_method"), ssPassword = o.optString("ss_password"), ports = o.optString("ports"), ctKey = o.optString("ct_key"),
                 )
             }.getOrNull()
         }

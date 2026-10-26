@@ -163,6 +163,7 @@ class MainVm(app: Application) : AndroidViewModel(app) {
             .putExtra(CoralVpnService.EXTRA_NAMES, (ordered.map { it.title() } + fragVariants.map { it.title() + " + дробление" }).toTypedArray())
             .putExtra(CoralVpnService.EXTRA_KEYS, (ordered.map { it.transportKey() } + fragVariants.map { "fragment" }).toTypedArray())
             .putExtra(CoralVpnService.EXTRA_SB, (ordered.map { SingBoxConfig.build(it) ?: "" } + fragVariants.map { "" }).toTypedArray())
+            .putExtra(CoralVpnService.EXTRA_CT, (ordered.map { ctSpec(it) } + fragVariants.map { "" }).toTypedArray())
             .putExtra(CoralVpnService.EXTRA_AUTO, pick.isBlank())
             .putExtra(CoralVpnService.EXTRA_APPS, appList.toTypedArray())
             .putExtra(CoralVpnService.EXTRA_APPS_MODE, appListMode)
@@ -170,11 +171,15 @@ class MainVm(app: Application) : AndroidViewModel(app) {
     }
 }
 
+/** Параметры ct-client для сервера Coral Transport: «хост|диапазон портов|ключ»; для остальных пусто. */
+fun ctSpec(s: Server): String = if (s.kind == "ct") "${s.host}|${s.ports}|${s.ctKey}" else ""
+
 /** Ключ транспорта для статистики: по нему сервер знает, что работает у какого оператора. */
 fun Server.transportKey(): String = when {
     kind == "hysteria2" -> "hysteria2"
     kind == "tuic" -> "tuic"
     kind == "ss2022" -> "ss2022"
+    kind == "ct" -> "ct"
     kind == "shadowtls" -> "shadowtls"
     network == "ws" -> "ws"
     network == "xhttp" -> "xhttp"

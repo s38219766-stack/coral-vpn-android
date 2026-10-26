@@ -245,6 +245,19 @@ class CoreTest {
         assertEquals("a:b", o.getString("password"))
     }
 
+    @Test fun coralTransportGoesThroughLocalCtClient() {
+        val json = """{"servers":[{"kind":"ct","name":"Наш протокол (Coral)","host":"203.0.113.5","ports":"21000:21999","ct_key":"abcd","ss_method":"2022-blake3-aes-128-gcm","password":"a:b"}]}"""
+        val c = Subscription.parseExtra(json).single()
+        assertEquals("ct", c.transportKey())
+        assertEquals("203.0.113.5|21000:21999|abcd", ctSpec(c))
+        val o = JSONObject(SingBoxConfig.build(c)!!).getJSONArray("outbounds").getJSONObject(0)
+        assertEquals("shadowsocks", o.getString("type"))
+        assertEquals("127.0.0.1", o.getString("server"))
+        assertEquals(SingBoxConfig.CT_PORT, o.getInt("server_port"))
+        assertEquals("a:b", o.getString("password"))
+        assertEquals("", ctSpec(Subscription.parseVless(reality)))
+    }
+
     @Test fun extraServersGoThroughLocalSocksInXray() {
         val hy = Subscription.parseExtra(extraJson)[0]
         val c = JSONObject(XrayConfig.build(hy, RouteMode.RU_DIRECT, fragment = true))
