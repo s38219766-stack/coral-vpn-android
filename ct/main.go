@@ -10,6 +10,7 @@ import (
 	"os"
 	"strconv"
 	"strings"
+	"time"
 )
 
 func main() {
@@ -83,8 +84,54 @@ func main() {
 		go cl.ServeUDP(pc)
 		log.Printf("ct client на %s → %s", *listen, *remote)
 		cl.ServeTCP(l)
+	case "probe":
+		// Диагностика задержек: сколько занимает TCP-соединение и рукопожатие до ответа сервера.
+		fs := flag.NewFlagSet("probe", flag.ExitOnError)
+		remote := fs.String("remote", "", "сервер")
+		ports := fs.String("ports", "9500:9500", "диапазон портов lo:hi")
+		key := fs.String("key", os.Getenv("CT_KEY"), "ключ пользователя, hex")
+		n := fs.Int("n", 5, "число попыток")
+		fs.Parse(os.Args[2:])
+		k, err := hex.DecodeString(*key)
+		if err != nil || len(k) < 16 || *remote == "" {
+			log.Fatal("нужны -remote и -key")
+		}
+		p := strings.SplitN(*ports, ":", 2)
+		lo, _ := strconv.Atoi(p[0])
+		hi := lo
+		if len(p) == 2 {
+			hi, _ = strconv.Atoi(p[1])
+		}
+		cl := &Client{Remote: *remote, PortLo: lo, PortHi: hi, Key: k}
+		for i := 0; i < *n; i++ {
+			probe(cl)
+		}
 	default:
-		fmt.Println("использование: ct server|client [флаги]")
+		fmt.Println("использование: ct server|client|probe [флаги]")
 		os.Exit(2)
 	}
+}
+
+func probe(cl *Client) {
+	t0 := time.Now()
+	c, err := cl.connect(t0)
+	if err != nil {
+		fmt.Println("ошибка:", err)
+		return
+	}
+	tTCP := time.Since(t0)
+	c.Close()
+	t1 := time.Now()
+	sc, err := cl.Dial()
+	if err != nil {
+		fmt.Println("ошибка:", err)
+		return
+	}
+	tDial := time.Since(t1) // TCP + построение ClientHello
+	t2 := time.Now()
+	sc.skip = false
+	err = skipServerFlight(sc.c)
+	tFlight := time.Since(t2)
+	sc.Close()
+	fmt.Printf("TCP: %v · соединение с ClientHello: %v · ответ сервера (ServerHello+CCS) ещё через: %v · ошибка: %v\n", tTCP.Round(time.Millisecond), tDial.Round(time.Millisecond), tFlight.Round(time.Millisecond), err)
 }
