@@ -23,8 +23,10 @@ object SingBoxConfig {
             }
             "ct" -> {
                 // Shadowsocks-2022 идёт не на сервер, а на локальный ct-client, который меняет форму трафика
+                // Мультиплексирование: много потоков в нескольких соединениях, новый сайт открывается без нового рукопожатия
                 outbounds.put(JSONObject().put("type", "shadowsocks").put("tag", "out")
-                    .put("server", "127.0.0.1").put("server_port", CT_PORT).put("method", s.ssMethod).put("password", s.secret))
+                    .put("server", "127.0.0.1").put("server_port", CT_PORT).put("method", s.ssMethod).put("password", s.secret)
+                    .put("multiplex", JSONObject().put("enabled", true).put("protocol", "smux").put("max_connections", 4).put("min_streams", 4)))
                 final = "out"
             }
             "ss2022" -> {

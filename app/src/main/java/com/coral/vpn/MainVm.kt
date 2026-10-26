@@ -185,6 +185,7 @@ fun Server.transportKey(): String = when {
     network == "xhttp" -> "xhttp"
     name.contains("Coral RU") -> "reality_ru"
     name.contains("Coral FI") -> "reality_fi"
+    name.contains("Coral US") -> "reality_us"
     security == "reality" && port != 443 -> "reality_ip"
     else -> "reality"
 }
@@ -195,6 +196,7 @@ fun Server.title(): String = when {
     network == "ws" -> "Защищённый"
     network == "xhttp" -> "Запасной (XHTTP)"
     name.contains("Coral RU") -> "Через Россию"
+    name.contains("Coral US") -> "США"
     name.contains("Coral FI2") -> "Финляндия 2"
     name.contains("Coral FI") -> "Финляндия"
     security == "reality" && port != 443 -> "Резервный (по IP)"

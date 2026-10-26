@@ -59,6 +59,7 @@ class CoralVpnService : VpnService() {
     }
 
     private fun start(configs0: List<String>, names0: List<String>, keys0: List<String>, sb0: List<String>, ct0: List<String>, auto: Boolean, apps: List<String>, appsMode: String, mobile: Boolean) {
+        val tStart = System.currentTimeMillis()
         val mtu = if (mobile) 1400 else 8500 // на мобильных сетях меньший MTU избавляет от потерь крупных пакетов
         Diag.log("шаг 1: копирование geoip/geosite")
         val assets = File(filesDir, "xray-assets").apply { mkdirs() }
@@ -88,6 +89,7 @@ class CoralVpnService : VpnService() {
             val t0 = System.currentTimeMillis()
             val ok = runCatching { tryServer(config, assets, sbConfig = sbs.getOrElse(i) { "" }, ctSpec = cts.getOrElse(i) { "" }) }.onFailure { Diag.log("ошибка: ${it.message}") }.getOrDefault(false)
             keys.getOrNull(i)?.let { NetProbe.report(this, it, ok, (System.currentTimeMillis() - t0).toInt()) }
+            Diag.log("сервер «$label»: ${if (ok) "готов" else "не прошёл"} за ${System.currentTimeMillis() - t0} мс")
             if (ok) { chosen = label; chosenIdx = i; break }
             xray?.destroy(); xray = null
             singbox?.destroy(); singbox = null
@@ -101,7 +103,7 @@ class CoralVpnService : VpnService() {
             if (ok) { chosen = (names.getOrNull(0) ?: "сервер 1") + " (без проверки)"; chosenIdx = 0 }
         }
         check(chosen != null) { "не удалось запустить ядро — отправьте журнал разработчику" }
-        Diag.log("шаг 3: выбран «$chosen»")
+        Diag.log("шаг 3: выбран «$chosen», всего ${System.currentTimeMillis() - tStart} мс")
 
         val builder = Builder()
             .setSession("Coral VPN")

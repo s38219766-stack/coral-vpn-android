@@ -269,6 +269,7 @@ class CoreTest {
         assertEquals("127.0.0.1", o.getString("server"))
         assertEquals(SingBoxConfig.CT_PORT, o.getInt("server_port"))
         assertEquals("a:b", o.getString("password"))
+        assertTrue("мультиплексирование включено", o.getJSONObject("multiplex").getBoolean("enabled"))
         assertEquals("", ctSpec(Subscription.parseVless(reality)))
     }
 
