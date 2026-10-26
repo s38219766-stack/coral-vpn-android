@@ -40,7 +40,7 @@ object Subscription {
                 val kind = o.getString("kind")
                 if (kind != "hysteria2" && kind != "shadowtls" && kind != "tuic" && kind != "ss2022" && kind != "ct") return@runCatching null
                 Server(
-                    name = o.getString("name"), uuid = o.optString("uuid"), host = o.getString("host"), port = o.getInt("port"),
+                    name = o.getString("name"), uuid = o.optString("uuid"), host = o.getString("host"), port = o.optInt("port", 0),
                     network = "tcp", security = "none", sni = o.optString("sni"), fingerprint = "chrome", publicKey = "", shortId = "",
                     flow = "", path = "", hostHeader = "", alpn = emptyList(),
                     kind = kind, secret = o.getString("password"),

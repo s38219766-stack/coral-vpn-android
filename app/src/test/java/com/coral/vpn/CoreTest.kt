@@ -245,6 +245,20 @@ class CoreTest {
         assertEquals("a:b", o.getString("password"))
     }
 
+    /** Ровно та форма ответа, которую отдаёт сервер (backend/app/transports.py, extra): ни один сервер не должен потеряться при разборе. */
+    @Test fun serverExtraShapeParsesAllFiveKinds() {
+        val json = """{"servers":[
+            {"kind":"hysteria2","name":"Быстрый UDP (Hysteria2)","host":"203.0.113.5","port":443,"password":"p1","sni":"example.org","ports":"20000:30000"},
+            {"kind":"ss2022","name":"Простой TCP (Shadowsocks)","host":"203.0.113.5","port":8388,"password":"a:b","ss_method":"2022-blake3-aes-128-gcm"},
+            {"kind":"tuic","name":"Запасной UDP (TUIC)","host":"203.0.113.5","port":4443,"uuid":"11111111-2222-3333-4444-555555555555","password":"p3","sni":"example.org"},
+            {"kind":"ct","name":"Наш протокол (Coral)","host":"203.0.113.5,203.0.113.6","ports":"21000:21999","ct_key":"abcd","ss_method":"2022-blake3-aes-128-gcm","password":"a:b"},
+            {"kind":"shadowtls","name":"Маска TLS (Shadow-TLS)","host":"203.0.113.5","port":8853,"password":"p5","sni":"www.yandex.ru","ss_method":"2022-blake3-aes-128-gcm","ss_password":"a:b"}]}"""
+        val list = Subscription.parseExtra(json)
+        assertEquals(listOf("hysteria2", "ss2022", "tuic", "ct", "shadowtls"), list.map { it.transportKey() })
+        list.forEach { assertNotNull("конфиг sing-box для ${it.kind}", SingBoxConfig.build(it)) }
+        assertEquals("203.0.113.5,203.0.113.6|21000:21999|abcd", ctSpec(list[3]))
+    }
+
     @Test fun coralTransportGoesThroughLocalCtClient() {
         val json = """{"servers":[{"kind":"ct","name":"Наш протокол (Coral)","host":"203.0.113.5","ports":"21000:21999","ct_key":"abcd","ss_method":"2022-blake3-aes-128-gcm","password":"a:b"}]}"""
         val c = Subscription.parseExtra(json).single()
