@@ -105,6 +105,16 @@ class CoreTest {
         assertTrue(c.getJSONObject("dns").toString().contains("1.1.1.1"))
     }
 
+    @Test fun googleAndAiServicesAlwaysGoThroughVpnBeforeAnyDirectRule() {
+        for (compat in listOf(true, false)) {
+            val rules = JSONObject(XrayConfig.build(Subscription.parseVless(reality), RouteMode.RU_DIRECT, compat = compat)).getJSONObject("routing").getJSONArray("rules")
+            fun idx(part: String) = (0 until rules.length()).first { rules.getJSONObject(it).toString().contains(part) }
+            val ai = idx("gemini.google.com")
+            assertEquals("proxy", rules.getJSONObject(ai).getString("outboundTag"))
+            assertTrue("правило для Gemini должно стоять выше российских правил", ai < idx("geoip:ru") && ai < idx("geosite:category-ru"))
+        }
+    }
+
     @Test fun adblockAddsBlockRuleFirst() {
         val c = JSONObject(XrayConfig.build(Subscription.parseVless(reality), RouteMode.ALL, adblock = true))
         val first = c.getJSONObject("routing").getJSONArray("rules").getJSONObject(DNS_RULES)

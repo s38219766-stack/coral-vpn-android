@@ -20,6 +20,15 @@ object XrayConfig {
         "geosite:notion", "geosite:medium", "geosite:signal", "geosite:telegram", "geosite:whatsapp",
     )
 
+    // Всегда через VPN, что бы ни показали адреса и DNS: сервисы Google и нейросетей. Правило стоит выше любых «напрямую», поэтому подменённый
+    // DNS оператора или российский узел Google не отправят их мимо VPN (сайт тогда видит российский адрес и пишет «страна не поддерживается»).
+    private val ALWAYS_VPN = listOf(
+        "geosite:google", "geosite:google-gemini", "geosite:openai", "geosite:perplexity", "geosite:category-ai-chat-!cn", "geosite:youtube",
+        "domain:gemini.google.com", "domain:ai.google.dev", "domain:aistudio.google.com", "domain:notebooklm.google.com", "domain:generativelanguage.googleapis.com",
+        "domain:anthropic.com", "domain:claude.ai", "domain:chatgpt.com", "domain:openai.com", "domain:oaistatic.com", "domain:oaiusercontent.com",
+        "domain:copilot.microsoft.com", "domain:x.ai", "domain:grok.com", "domain:mistral.ai", "domain:poe.com", "domain:huggingface.co",
+    )
+
     // Российские сайты и сервисы напрямую. Имена geosite проверены по geosite.dat из Xray-core v24.12.31.
     private val RU_DOMAINS = listOf(
         "domain:ru", "domain:su", "domain:xn--p1ai", "geosite:category-ru", "geosite:yandex", "geosite:vk",
@@ -146,6 +155,7 @@ object XrayConfig {
         // Свои списки пользователя важнее любого режима
         if (viaVpn.isNotEmpty()) rules.put(rule("proxy").put("domain", JSONArray(viaVpn.map { "domain:$it" })))
         if (direct.isNotEmpty()) rules.put(rule("direct").put("domain", JSONArray(direct.map { "domain:$it" })))
+        rules.put(rule("proxy").put("domain", JSONArray(ALWAYS_VPN)))
         // Выбранные страны (банки, сервисы, государственные сайты) идут напрямую: и по домену страны, и по её диапазонам IP
         val known = countries.filter { c -> COUNTRIES.any { it.first == c } }
         if (known.isNotEmpty()) {
