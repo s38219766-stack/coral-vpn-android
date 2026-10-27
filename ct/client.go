@@ -1,6 +1,7 @@
 package main
 
 import (
+	"context"
 	crand "crypto/rand"
 	"errors"
 	"fmt"
@@ -22,6 +23,7 @@ type Client struct {
 
 	cur atomic.Int32 // индекс последнего рабочего сервера
 
+	dialFn  func(ctx context.Context, network, addr string) (net.Conn, error) // для тестов
 	mu      sync.Mutex
 	udpPort int
 	udpAt   time.Time
@@ -62,23 +64,74 @@ func (cl *Client) addr(now time.Time) string {
 	return net.JoinHostPort(h[int(cl.cur.Load())%len(h)], fmt.Sprint(port))
 }
 
-// connect перебирает серверы начиная с последнего рабочего; успешный запоминается.
+// connect подключается «гонкой»: сначала пробуем последний рабочий сервер, и если он не ответил за 300 мс, параллельно
+// запускаем следующий (потом следующий), побеждает первый ответивший. Так блокировка адреса стоит доли секунды, а не таймаут.
+// Каждая попытка идёт на случайный порт из диапазона; на каждый сервер даётся две попытки с разными портами.
 func (cl *Client) connect(now time.Time) (net.Conn, error) {
 	h := cl.hosts()
 	if len(h) == 0 {
 		return nil, errors.New("не задан сервер")
 	}
 	start := int(cl.cur.Load())
-	var last error
-	for i := 0; i < len(h); i++ {
-		idx := (start + i) % len(h)
-		for try := 0; try < 2; try++ { // два разных порта на сервер, потом следующий сервер
-			c, err := net.DialTimeout("tcp", cl.addrFor(h[idx], now), 5*time.Second)
-			if err == nil {
-				cl.cur.Store(int32(idx))
-				return c, nil
+	var order []int
+	for pass := 0; pass < 2; pass++ {
+		for i := 0; i < len(h); i++ {
+			order = append(order, (start+i)%len(h))
+		}
+	}
+	type result struct {
+		c   net.Conn
+		idx int
+		err error
+	}
+	ctx, cancel := context.WithCancel(context.Background())
+	defer cancel()
+	ch := make(chan result, len(order))
+	launched, pending := 0, 0
+	launch := func() {
+		idx := order[launched]
+		launched++
+		pending++
+		go func() {
+			dial := cl.dialFn
+			if dial == nil {
+				d := net.Dialer{Timeout: 5 * time.Second}
+				dial = d.DialContext
 			}
-			last = err
+			c, err := dial(ctx, "tcp", cl.addrFor(h[idx], now))
+			ch <- result{c, idx, err}
+		}()
+	}
+	launch()
+	timer := time.NewTimer(300 * time.Millisecond)
+	defer timer.Stop()
+	var last error
+	for pending > 0 {
+		select {
+		case r := <-ch:
+			pending--
+			if r.err == nil {
+				cancel()
+				rest := pending
+				go func() { // опоздавшие соединения закрываем
+					for i := 0; i < rest; i++ {
+						if x := <-ch; x.c != nil {
+							x.c.Close()
+						}
+					}
+				}()
+				cl.cur.Store(int32(r.idx))
+				return r.c, nil
+			}
+			last = r.err
+			if launched < len(order) { // не ждём 300 мс, если сервер отказал сразу
+				launch()
+			}
+		case <-timer.C:
+			if launched < len(order) {
+				launch()
+				timer.Reset(300 * time.Millisecond)
+			}
 		}
 	}
 	return nil, last

@@ -2,6 +2,7 @@ package main
 
 import (
 	"bytes"
+	"context"
 	"crypto/rand"
 	"fmt"
 	"io"
@@ -394,5 +395,38 @@ func TestPortsAreRandomPerConnection(t *testing.T) {
 	a1 := cl.addr(time.Now())
 	if a2 := cl.addr(time.Now().Add(5 * time.Second)); a1 != a2 {
 		t.Fatal("UDP-порт не должен меняться чаще раза в минуту")
+	}
+}
+
+func TestRaceDialSkipsBlackholedHostQuickly(t *testing.T) {
+	_, cl, _ := setup(t)
+	real := cl.Remote
+	cl.Remote = "blackhole.test," + real
+	var d net.Dialer
+	cl.dialFn = func(ctx context.Context, network, addr string) (net.Conn, error) {
+		if strings.HasPrefix(addr, "blackhole.test") {
+			<-ctx.Done() // «глухой» адрес: ни ответа, ни отказа
+			return nil, ctx.Err()
+		}
+		return d.DialContext(ctx, network, addr)
+	}
+	t0 := time.Now()
+	sc, err := cl.Dial()
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer sc.Close()
+	took := time.Since(t0)
+	sc.Write([]byte("ping"))
+	b := make([]byte, 4)
+	if _, err := io.ReadFull(sc, b); err != nil || string(b) != "ping" {
+		t.Fatalf("связь не работает: %v", err)
+	}
+	t.Logf("подключение при «глухом» первом адресе: %v", took)
+	if took > 700*time.Millisecond {
+		t.Fatalf("гонка должна обойти молчащий адрес за ~300 мс, а не за таймаут: %v", took)
+	}
+	if cl.cur.Load() != 1 {
+		t.Fatalf("рабочий сервер должен запомниться, индекс %d", cl.cur.Load())
 	}
 }
