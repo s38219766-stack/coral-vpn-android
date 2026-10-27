@@ -23,6 +23,21 @@ jobs:
           mkdir -p app/src/main/jniLibs/arm64-v8a app/src/main/assets
           cp xray/xray app/src/main/jniLibs/arm64-v8a/libxray.so
           cp xray/geoip.dat xray/geosite.dat app/src/main/assets/
+      - name: sing-box (GPL-3.0, отдельный процесс) для Hysteria2 и Shadow-TLS
+        run: |
+          curl -fL -o sb.tgz https://github.com/SagerNet/sing-box/releases/download/v1.14.4/sing-box-1.14.4-android-arm64.tar.gz
+          tar xzf sb.tgz
+          cp sing-box-1.14.4-android-arm64/sing-box app/src/main/jniLibs/arm64-v8a/libsingbox.so
+          ls -la app/src/main/jniLibs/arm64-v8a/
+      - uses: actions/setup-go@v5
+        with:
+          go-version-file: ct/go.mod
+      - name: Coral Transport (наш слой формы трафика, отдельный процесс)
+        working-directory: ct
+        run: |
+          go test ./...
+          CGO_ENABLED=0 GOOS=linux GOARCH=arm64 go build -trimpath -ldflags="-s -w" -o ../app/src/main/jniLibs/arm64-v8a/libct.so .
+          ls -la ../app/src/main/jniLibs/arm64-v8a/
       - name: hev-socks5-tunnel (MIT)
         run: |
           mkdir -p hevbuild/jni && cd hevbuild
