@@ -25,7 +25,9 @@ object Diag {
     fun clear() { runCatching { file?.writeText("") } }
 
     fun report(): String {
-        val steps = runCatching { file?.readText() }.getOrNull().orEmpty().takeLast(6000)
+        // Начало журнала (какой сервер выбран, как запускались ядра) и конец: середину с повторяющимися проверками отбрасываем
+        val all = runCatching { file?.readText() }.getOrNull().orEmpty()
+        val steps = if (all.length <= 7500) all else all.take(4000) + "\n… (середина журнала пропущена) …\n" + all.takeLast(3500)
         val crash = runCatching {
             val p = Runtime.getRuntime().exec(arrayOf("logcat", "-b", "crash", "-d", "-t", "60"))
             p.inputStream.bufferedReader().readText().takeLast(4000)

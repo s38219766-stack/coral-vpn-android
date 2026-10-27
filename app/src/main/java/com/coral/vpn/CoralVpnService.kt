@@ -42,6 +42,7 @@ class CoralVpnService : VpnService() {
     private var lists: Lists? = null
     @Volatile private var currentIdx = -1
     @Volatile private var switching = false
+    @Volatile private var lastProbeLog = 0L
     @Volatile private var generation = 0   // меняется при остановке, чтобы сторож связи прекратил работу
 
     override fun onStartCommand(intent: Intent?, flags: Int, startId: Int): Int {
@@ -203,9 +204,18 @@ class CoralVpnService : VpnService() {
         currentIdx = start
         Thread {
             var fails = 0
+            var tick = 0
+            var prevTx = 0L; var prevRx = 0L
             while (gen == generation && state.value == VpnState.ON) {
                 runCatching { Thread.sleep(if (getSharedPreferences("coral", MODE_PRIVATE).getBoolean("eco_battery", false)) 60_000L else 20_000L) }
                 if (gen != generation || state.value != VpnState.ON) return@Thread
+                // раз в минуту пишем, сколько данных прошло через туннель: видно, идёт ли трафик приложений и приходят ли ответы
+                if (++tick % 3 == 0) {
+                    runCatching { TProxyService.TProxyGetStats() }.getOrNull()?.takeIf { it.size >= 4 }?.let { st ->
+                        Diag.log("туннель за минуту: отправлено ${(st[1] - prevTx) / 1024} КБ, получено ${(st[3] - prevRx) / 1024} КБ (всего пакетов: ${st[0]} / ${st[2]})")
+                        prevTx = st[1]; prevRx = st[3]
+                    }
+                }
                 if (probe()) { fails = 0; continue }
                 if (++fails < 2) continue
                 fails = 0
@@ -342,7 +352,8 @@ class CoralVpnService : VpnService() {
                 c.readTimeout = 4000
                 val code = c.responseCode
                 c.disconnect()
-                Diag.log("проверка связи ($url): HTTP $code")
+                // успешные проверки пишем не чаще раза в 5 минут: иначе они вытесняют из журнала важные шаги
+                if (code != 204 || System.currentTimeMillis() - lastProbeLog > 300_000) { Diag.log("проверка связи ($url): HTTP $code"); lastProbeLog = System.currentTimeMillis() }
                 if (code == 204) return true
             }.onFailure { Diag.log("проверка связи ($url): ${it.javaClass.simpleName}: ${it.message}") }
         }
