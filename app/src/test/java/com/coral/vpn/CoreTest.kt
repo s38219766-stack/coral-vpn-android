@@ -90,7 +90,7 @@ class CoreTest {
             val rules = c.getJSONObject("routing").getJSONArray("rules")
             val r = rules.getJSONObject(2)
             assertEquals("block", r.getString("outboundTag"))
-            assertTrue(r.toString().contains("::/0"))
+            assertTrue(r.toString().contains("2000::/3"))
             assertFalse(c.getJSONArray("outbounds").toString().contains("dns-out"))
         }
     }
@@ -100,6 +100,7 @@ class CoreTest {
         assertEquals("IPIfNonMatch", c.getJSONObject("routing").getString("domainStrategy"))
         val rules = c.getJSONObject("routing").getJSONArray("rules").toString()
         assertFalse(rules.contains("dns-in"))
+        assertTrue("IPv6 блокируем и в режиме совместимости", rules.contains("2000::/3"))
         assertFalse(rules.contains("::/0"))
         assertFalse(c.getJSONObject("dns").has("tag"))
         assertTrue(c.getJSONObject("dns").toString().contains("1.1.1.1"))
