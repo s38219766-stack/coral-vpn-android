@@ -35,7 +35,9 @@ class MainVm(app: Application) : AndroidViewModel(app) {
     var adblock by mutableStateOf(prefs.getBoolean("adblock", false))
     var mobile by mutableStateOf(prefs.getBoolean("mobile", false))
     var fragment by mutableStateOf(prefs.getBoolean("fragment", false))
-    var compat by mutableStateOf(prefs.getBoolean("compat", false))   // режим совместимости: прежние правила маршрутов
+    // Режим совместимости (прежние правила маршрутов: обычный DNS, выбор пути по адресу, IPv6 не блокируем) включён по умолчанию:
+    // новые правила 0.13.5–0.13.6 (DNS по DoH, блок IPv6) у части телефонов оставляли без интернета, их можно включить вручную
+    var compat by mutableStateOf(prefs.getBoolean("compat", true))
     var eco by mutableStateOf(prefs.getBoolean("eco_battery", false))   // экономия батареи: реже проверки связи
     var login by mutableStateOf(LoginState.IDLE)
     var notice by mutableStateOf("")
