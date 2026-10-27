@@ -35,6 +35,20 @@ object NetProbe {
         List(arr.length()) { arr.getString(it) }
     }.getOrDefault(emptyList())
 
+    /** Анонимная отметка: ответил ли наш адрес (основной сервер или мост) у этого оператора. */
+    fun reportHost(ctx: Context, host: String, ok: Boolean) {
+        val body = JSONObject().put("carrier", carrier(ctx)).put("net", netName(ctx)).put("host", host).put("ok", ok).toString()
+        Thread {
+            runCatching {
+                val c = URL("${Api.BASE}/api/net/host").openConnection() as HttpURLConnection
+                c.requestMethod = "POST"; c.connectTimeout = 4000; c.readTimeout = 4000; c.doOutput = true
+                c.setRequestProperty("Content-Type", "application/json")
+                c.outputStream.use { it.write(body.toByteArray()) }
+                c.responseCode; c.disconnect()
+            }
+        }.start()
+    }
+
     fun report(ctx: Context, transport: String, ok: Boolean, ms: Int) {
         val body = JSONObject().put("carrier", carrier(ctx)).put("net", netName(ctx))
             .put("transport", transport).put("ok", ok).put("ms", ms).toString()

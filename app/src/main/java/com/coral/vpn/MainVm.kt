@@ -35,6 +35,7 @@ class MainVm(app: Application) : AndroidViewModel(app) {
     var adblock by mutableStateOf(prefs.getBoolean("adblock", false))
     var mobile by mutableStateOf(prefs.getBoolean("mobile", false))
     var fragment by mutableStateOf(prefs.getBoolean("fragment", false))
+    var eco by mutableStateOf(prefs.getBoolean("eco_battery", false))   // экономия батареи: реже проверки связи
     var login by mutableStateOf(LoginState.IDLE)
     var notice by mutableStateOf("")
     var loading by mutableStateOf(false)
@@ -57,6 +58,7 @@ class MainVm(app: Application) : AndroidViewModel(app) {
 
     fun changeMode(m: RouteMode) { mode = m; prefs.edit().putString("mode", m.name).apply() }
     fun changeMobile(v: Boolean) { mobile = v; prefs.edit().putBoolean("mobile", v).apply() }
+    fun changeEco(v: Boolean) { eco = v; prefs.edit().putBoolean("eco_battery", v).apply() }
     fun changeFragment(v: Boolean) { fragment = v; prefs.edit().putBoolean("fragment", v).apply() }
     fun changeAdblock(v: Boolean) { adblock = v; prefs.edit().putBoolean("adblock", v).apply() }
     fun changeAppsMode(m: String) { appsMode = m; prefs.edit().putString("apps_mode", m).apply() }
@@ -101,7 +103,8 @@ class MainVm(app: Application) : AndroidViewModel(app) {
                 .onSuccess { (body, header) ->
                     val list = Subscription.parse(body)
                     // Hysteria2 и Shadow-TLS: если сервер их не отдал, остаётся обычный список
-                    val extraJson = runCatching { Api.fetchExtra(subUrl) }.getOrNull()
+                    val app = getApplication<Application>()
+                    val extraJson = runCatching { Api.fetchExtra(subUrl, NetProbe.carrier(app), if (NetProbe.isWifi(app)) "wifi" else "mobile") }.getOrNull()
                     val extra = extraJson?.let { runCatching { Subscription.parseExtra(it) }.getOrNull() }
                         ?: Subscription.parseExtra(prefs.getString("extra_cache", "") ?: "{}")
                     if (extraJson != null && extra.isNotEmpty()) prefs.edit().putString("extra_cache", extraJson).apply()

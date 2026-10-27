@@ -204,7 +204,7 @@ class CoralVpnService : VpnService() {
         Thread {
             var fails = 0
             while (gen == generation && state.value == VpnState.ON) {
-                runCatching { Thread.sleep(20_000) }
+                runCatching { Thread.sleep(if (getSharedPreferences("coral", MODE_PRIVATE).getBoolean("eco_battery", false)) 60_000L else 20_000L) }
                 if (gen != generation || state.value != VpnState.ON) return@Thread
                 if (probe()) { fails = 0; continue }
                 if (++fails < 2) continue
@@ -287,7 +287,15 @@ class CoralVpnService : VpnService() {
         pb.environment()["CT_KEY"] = key
         val proc = pb.redirectErrorStream(true).start()
         ct = proc
-        Thread { runCatching { proc.inputStream.bufferedReader().forEachLine { Diag.log("ct: ${it.take(300)}") } } }.start()
+        Thread {
+            runCatching {
+                proc.inputStream.bufferedReader().forEachLine { line ->
+                    Diag.log("ct: ${line.take(300)}")
+                    // строки «host ok|fail <адрес>» от ct-клиента превращаем в анонимную статистику по адресам
+                    Regex("host (ok|fail) ([0-9.]{7,15})").find(line)?.let { m -> NetProbe.reportHost(this, m.groupValues[2], m.groupValues[1] == "ok") }
+                }
+            }
+        }.start()
         repeat(30) {
             if (!proc.isAlive) return false
             if (runCatching { java.net.Socket("127.0.0.1", SingBoxConfig.CT_PORT).use { true } }.getOrDefault(false)) return true
