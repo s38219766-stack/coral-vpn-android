@@ -7,6 +7,8 @@ import android.app.PendingIntent
 import android.content.Intent
 import android.content.pm.ServiceInfo
 import android.graphics.drawable.Icon
+import android.net.ConnectivityManager
+import android.net.NetworkCapabilities
 import android.net.VpnService
 import android.os.Build
 import android.os.ParcelFileDescriptor
@@ -214,6 +216,14 @@ class CoralVpnService : VpnService() {
                     runCatching { TProxyService.TProxyGetStats() }.getOrNull()?.takeIf { it.size >= 4 }?.let { st ->
                         Diag.log("туннель за минуту: отправлено ${(st[1] - prevTx) / 1024} КБ, получено ${(st[3] - prevRx) / 1024} КБ (всего пакетов: ${st[0]} / ${st[2]})")
                         prevTx = st[1]; prevRx = st[3]
+                    }
+                }
+                if (tick % 3 == 0) {
+                    // Что думает система о сети VPN: если «не проверена», приложения вроде Google показывают «Вы офлайн», хотя Telegram работает
+                    runCatching {
+                        val cm = getSystemService(ConnectivityManager::class.java)
+                        val caps = cm.getNetworkCapabilities(cm.activeNetwork)
+                        Diag.log("система: активная сеть — VPN: ${caps?.hasTransport(NetworkCapabilities.TRANSPORT_VPN)}, интернет: ${caps?.hasCapability(NetworkCapabilities.NET_CAPABILITY_INTERNET)}, проверена системой: ${caps?.hasCapability(NetworkCapabilities.NET_CAPABILITY_VALIDATED)}")
                     }
                 }
                 if (probe()) { fails = 0; continue }
