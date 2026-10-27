@@ -373,3 +373,26 @@ func TestKeepaliveSentWhenIdle(t *testing.T) {
 		t.Fatal("холостые кадры не отправляются")
 	}
 }
+
+func TestPortsAreRandomPerConnection(t *testing.T) {
+	cl := &Client{Remote: "127.0.0.1", PortLo: 21000, PortHi: 21999, Key: userKey(master, "tg1")}
+	seen := map[int]bool{}
+	for i := 0; i < 40; i++ {
+		_, p, _ := net.SplitHostPort(cl.addrFor("127.0.0.1", time.Now()))
+		n := 0
+		for _, ch := range p {
+			n = n*10 + int(ch-'0')
+		}
+		if n < 21000 || n > 21999 {
+			t.Fatalf("порт вне диапазона: %d", n)
+		}
+		seen[n] = true
+	}
+	if len(seen) < 20 {
+		t.Fatalf("порты почти не меняются: %d разных из 40", len(seen))
+	}
+	a1 := cl.addr(time.Now())
+	if a2 := cl.addr(time.Now().Add(5 * time.Second)); a1 != a2 {
+		t.Fatal("UDP-порт не должен меняться чаще раза в минуту")
+	}
+}

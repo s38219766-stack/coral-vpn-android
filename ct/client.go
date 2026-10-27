@@ -5,8 +5,10 @@ import (
 	"errors"
 	"fmt"
 	"log"
+	"math/rand/v2"
 	"net"
 	"strings"
+	"sync"
 	"sync/atomic"
 	"time"
 )
@@ -19,6 +21,10 @@ type Client struct {
 	SNI    []string // имена для маскировки (по умолчанию DefaultSNI); должны совпадать с серверными
 
 	cur atomic.Int32 // индекс последнего рабочего сервера
+
+	mu      sync.Mutex
+	udpPort int
+	udpAt   time.Time
 }
 
 func (cl *Client) hosts() []string {
@@ -31,14 +37,29 @@ func (cl *Client) hosts() []string {
 	return out
 }
 
-func (cl *Client) addrFor(host string, now time.Time) string {
-	ke := epochKey(cl.Key, epochDay(now))
-	return net.JoinHostPort(host, fmt.Sprint(portFor(ke, cl.PortLo, cl.PortHi)))
+// pickPort — случайный порт из диапазона: каждое новое соединение идёт на другой порт, поэтому блокировка отдельных портов
+// почти ничего не отнимает (сервер принимает весь диапазон одинаково).
+func (cl *Client) pickPort() int {
+	if cl.PortHi <= cl.PortLo {
+		return cl.PortLo
+	}
+	return cl.PortLo + rand.IntN(cl.PortHi-cl.PortLo+1)
 }
 
+func (cl *Client) addrFor(host string, _ time.Time) string {
+	return net.JoinHostPort(host, fmt.Sprint(cl.pickPort()))
+}
+
+// addr — адрес для UDP: порт «прыгает» раз в минуту (в пределах минуты соответствие в NAT оператора не меняется).
 func (cl *Client) addr(now time.Time) string {
 	h := cl.hosts()
-	return cl.addrFor(h[int(cl.cur.Load())%len(h)], now)
+	cl.mu.Lock()
+	if cl.udpPort == 0 || now.Sub(cl.udpAt) > time.Minute {
+		cl.udpPort, cl.udpAt = cl.pickPort(), now
+	}
+	port := cl.udpPort
+	cl.mu.Unlock()
+	return net.JoinHostPort(h[int(cl.cur.Load())%len(h)], fmt.Sprint(port))
 }
 
 // connect перебирает серверы начиная с последнего рабочего; успешный запоминается.
@@ -51,12 +72,14 @@ func (cl *Client) connect(now time.Time) (net.Conn, error) {
 	var last error
 	for i := 0; i < len(h); i++ {
 		idx := (start + i) % len(h)
-		c, err := net.DialTimeout("tcp", cl.addrFor(h[idx], now), 6*time.Second)
-		if err == nil {
-			cl.cur.Store(int32(idx))
-			return c, nil
+		for try := 0; try < 2; try++ { // два разных порта на сервер, потом следующий сервер
+			c, err := net.DialTimeout("tcp", cl.addrFor(h[idx], now), 5*time.Second)
+			if err == nil {
+				cl.cur.Store(int32(idx))
+				return c, nil
+			}
+			last = err
 		}
-		last = err
 	}
 	return nil, last
 }
