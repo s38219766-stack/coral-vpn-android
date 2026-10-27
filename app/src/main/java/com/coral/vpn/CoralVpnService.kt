@@ -3,8 +3,10 @@ package com.coral.vpn
 import android.app.Notification
 import android.app.NotificationChannel
 import android.app.NotificationManager
+import android.app.PendingIntent
 import android.content.Intent
 import android.content.pm.ServiceInfo
+import android.graphics.drawable.Icon
 import android.net.VpnService
 import android.os.Build
 import android.os.ParcelFileDescriptor
@@ -19,6 +21,7 @@ enum class VpnState { OFF, CONNECTING, ON, ERROR }
 class CoralVpnService : VpnService() {
     companion object {
         const val ACTION_STOP = "com.coral.vpn.STOP"
+        const val ACTION_SWITCH = "com.coral.vpn.SWITCH"
         const val EXTRA_CONFIGS = "configs"
         const val EXTRA_NAMES = "names"
         const val EXTRA_APPS = "apps"
@@ -36,10 +39,14 @@ class CoralVpnService : VpnService() {
     private var xray: Process? = null
     private var singbox: Process? = null
     private var ct: Process? = null
+    private var lists: Lists? = null
+    @Volatile private var currentIdx = -1
+    @Volatile private var switching = false
     @Volatile private var generation = 0   // меняется при остановке, чтобы сторож связи прекратил работу
 
     override fun onStartCommand(intent: Intent?, flags: Int, startId: Int): Int {
         if (intent?.action == ACTION_STOP) { shutdown(); return START_NOT_STICKY }
+        if (intent?.action == ACTION_SWITCH) { manualSwitch(); return START_NOT_STICKY }
         val configs = intent?.getStringArrayExtra(EXTRA_CONFIGS)?.toList() ?: return START_NOT_STICKY
         val names = intent.getStringArrayExtra(EXTRA_NAMES)?.toList().orEmpty()
         val apps = intent.getStringArrayExtra(EXTRA_APPS)?.toList().orEmpty()
@@ -148,17 +155,39 @@ class CoralVpnService : VpnService() {
         Diag.log("шаг 6: туннель запущен, работает=${TProxyService.TProxyIsRunning()}")
         state.value = VpnState.ON
         message.value = "Подключено: $chosen"
-        if (chosenIdx >= 0) watch(configs, names, keys, sbs, cts, assets, chosenIdx)
+        updateNotification("Защита включена · $chosen")
+        lists = Lists(configs, names, keys, sbs, cts, assets)
+        if (chosenIdx >= 0) watch(lists!!, chosenIdx)
+    }
+
+    private class Lists(val configs: List<String>, val names: List<String>, val keys: List<String>, val sbs: List<String>, val cts: List<String>, val assets: File)
+
+    private fun nameOf(l: Lists, i: Int) = l.names.getOrNull(i) ?: "сервер ${i + 1}"
+
+    /** Пробует способы по кругу, начиная со следующего за current (текущий — последним). Возвращает номер рабочего, -1 — никто, -2 — остановлено. */
+    private fun switchFrom(l: Lists, current: Int, gen: Int, tag: String): Int {
+        val order = (1..l.configs.size).map { (current + it) % l.configs.size }
+        for (i in order) {
+            if (gen != generation) return -2
+            xray?.destroy(); xray = null
+            singbox?.destroy(); singbox = null
+            ct?.destroy(); ct = null
+            Diag.log("$tag: пробуем «${nameOf(l, i)}»")
+            val ok = runCatching { tryServer(l.configs[i], l.assets, sbConfig = l.sbs.getOrElse(i) { "" }, ctSpec = l.cts.getOrElse(i) { "" }) }.getOrDefault(false)
+            l.keys.getOrNull(i)?.let { NetProbe.report(this, it, ok, 0) }
+            if (ok) return i
+        }
+        return -1
     }
 
     /**
      * Сторож связи: если через текущий сервер трафик перестал ходить (оператор начал резать), сам
-     * переключается на следующий способ, не разрывая туннель. Туннель hev смотрит на тот же локальный порт.
+     * переключается на следующий способ. Туннель hev смотрит на тот же локальный порт.
      */
-    private fun watch(configs: List<String>, names: List<String>, keys: List<String>, sbs: List<String>, cts: List<String>, assets: File, start: Int) {
+    private fun watch(l: Lists, start: Int) {
         val gen = ++generation
+        currentIdx = start
         Thread {
-            var current = start
             var fails = 0
             while (gen == generation && state.value == VpnState.ON) {
                 runCatching { Thread.sleep(20_000) }
@@ -168,26 +197,41 @@ class CoralVpnService : VpnService() {
                 fails = 0
                 Diag.log("сторож: связь пропала, ищем рабочий способ")
                 message.value = "Связь пропала, переключаемся…"
-                val order = (1..configs.size).map { (current + it) % configs.size }   // сначала следующие, текущий — последним
-                var found = -1
-                for (i in order) {
-                    if (gen != generation) return@Thread
-                    xray?.destroy(); xray = null
-                    singbox?.destroy(); singbox = null
-                    ct?.destroy(); ct = null
-                    val label = names.getOrNull(i) ?: "сервер ${i + 1}"
-                    Diag.log("сторож: пробуем «$label»")
-                    val ok = runCatching { tryServer(configs[i], assets, sbConfig = sbs.getOrElse(i) { "" }, ctSpec = cts.getOrElse(i) { "" }) }.getOrDefault(false)
-                    keys.getOrNull(i)?.let { NetProbe.report(this, it, ok, 0) }
-                    if (ok) { found = i; break }
-                }
-                if (gen != generation) return@Thread
+                val found = switchFrom(l, currentIdx, gen, "сторож")
+                if (found == -2) return@Thread
                 if (found >= 0) {
-                    current = found
-                    message.value = "Подключено: ${names.getOrNull(found) ?: "сервер ${found + 1}"}"
+                    currentIdx = found
+                    message.value = "Подключено: ${nameOf(l, found)}"
+                    updateNotification("Защита включена · ${nameOf(l, found)}")
                 } else {
                     message.value = "Нет связи, продолжаем пытаться…"
                 }
+            }
+        }.start()
+    }
+
+    /** Кнопка «Сменить сервер» в уведомлении: переходим на следующий способ, сторож на это время останавливается. */
+    private fun manualSwitch() {
+        val l = lists ?: return
+        if (state.value != VpnState.ON || switching) return
+        switching = true
+        Thread {
+            try {
+                val gen = ++generation
+                message.value = "Меняем сервер…"
+                updateNotification("Меняем сервер…")
+                val found = switchFrom(l, currentIdx, gen, "ручная смена")
+                if (found == -2) return@Thread
+                if (found >= 0) {
+                    message.value = "Подключено: ${nameOf(l, found)}"
+                    updateNotification("Защита включена · ${nameOf(l, found)}")
+                    watch(l, found)
+                } else {
+                    message.value = "Нет связи, продолжаем пытаться…"
+                    watch(l, currentIdx)
+                }
+            } finally {
+                switching = false
             }
         }.start()
     }
@@ -308,6 +352,7 @@ class CoralVpnService : VpnService() {
 
     private fun shutdown() {
         generation++
+        lists = null; currentIdx = -1; switching = false
         runCatching { TProxyService.TProxyStopService() }
         xray?.destroy(); xray = null
         singbox?.destroy(); singbox = null
@@ -321,12 +366,33 @@ class CoralVpnService : VpnService() {
     override fun onRevoke() = shutdown()
     override fun onDestroy() { shutdown(); super.onDestroy() }
 
+    /** Уведомление: по нажатию открывает приложение, кнопка «Отключить» выключает VPN прямо из шторки. */
+    private fun buildNotification(text: String): Notification {
+        val flags = PendingIntent.FLAG_IMMUTABLE or PendingIntent.FLAG_UPDATE_CURRENT
+        val open = PendingIntent.getActivity(
+            this, 0,
+            Intent(this, MainActivity::class.java).addFlags(Intent.FLAG_ACTIVITY_NEW_TASK or Intent.FLAG_ACTIVITY_SINGLE_TOP or Intent.FLAG_ACTIVITY_CLEAR_TOP),
+            flags,
+        )
+        val stop = PendingIntent.getService(this, 1, Intent(this, CoralVpnService::class.java).setAction(ACTION_STOP), flags)
+        val next = PendingIntent.getService(this, 2, Intent(this, CoralVpnService::class.java).setAction(ACTION_SWITCH), flags)
+        return Notification.Builder(this, "vpn")
+            .setContentTitle("Coral VPN").setContentText(text)
+            .setSmallIcon(android.R.drawable.ic_lock_lock).setOngoing(true).setOnlyAlertOnce(true)
+            .setContentIntent(open)
+            .addAction(Notification.Action.Builder(Icon.createWithResource(this, android.R.drawable.ic_menu_rotate), "Сменить сервер", next).build())
+            .addAction(Notification.Action.Builder(Icon.createWithResource(this, android.R.drawable.ic_menu_close_clear_cancel), "Отключить", stop).build())
+            .build()
+    }
+
+    private fun updateNotification(text: String) {
+        runCatching { getSystemService(NotificationManager::class.java).notify(1, buildNotification(text)) }
+    }
+
     private fun startForegroundCompat() {
         val nm = getSystemService(NotificationManager::class.java)
         nm.createNotificationChannel(NotificationChannel("vpn", "VPN", NotificationManager.IMPORTANCE_LOW))
-        val n: Notification = Notification.Builder(this, "vpn")
-            .setContentTitle("Coral VPN").setContentText("Защита включена")
-            .setSmallIcon(android.R.drawable.ic_lock_lock).setOngoing(true).build()
+        val n = buildNotification("Подключение…")
         if (Build.VERSION.SDK_INT >= 34) startForeground(1, n, ServiceInfo.FOREGROUND_SERVICE_TYPE_SPECIAL_USE)
         else startForeground(1, n)
     }
