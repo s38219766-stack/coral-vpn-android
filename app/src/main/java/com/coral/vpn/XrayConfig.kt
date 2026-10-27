@@ -141,14 +141,14 @@ object XrayConfig {
     private fun routing(mode: RouteMode, adblock: Boolean, mobile: Boolean = false, viaVpn: List<String> = emptyList(), direct: List<String> = emptyList(), countries: List<String> = emptyList(), compat: Boolean = false): JSONObject {
         val rules = JSONArray()
         if (!compat) {
+            // Новые правила (включаются вручную в настройках, экспериментально).
             // DNS-запросы самого Xray: к Яндекс DNS — напрямую, все остальные — через VPN (их нельзя подменить)
             rules.put(rule("direct").put("inboundTag", JSONArray(listOf("dns-in"))).put("ip", JSONArray(listOf("77.88.8.8"))))
             rules.put(rule("proxy").put("inboundTag", JSONArray(listOf("dns-in"))))
+            // Быстрый отказ на IPv6: у основного узла нет выхода в IPv6. Правило оставили только в экспериментальном режиме: в версиях 0.13.6 и 0.13.10
+            // с ним у части телефонов пропадал интернет. Нужный выход делается на стороне серверов (способ «Наш протокол» теперь выходит через Финляндию).
+            rules.put(rule("block").put("ip", JSONArray(listOf("2000::/3"))))
         }
-        // IPv6 не используем (в любом режиме): у части наших серверов (например, основной узел) нет выхода в IPv6, и Google, Cloudflare и другие
-        // сначала шли туда, получали отказ с сервера и оставались «офлайн». Отказ на самом телефоне занимает миллисекунды, приложения берут IPv4,
-        // и ничего не утекает в обход VPN. Берём именно 2000::/3 (все глобальные адреса), а не ::/0: так правило заведомо не заденет IPv4.
-        rules.put(rule("block").put("ip", JSONArray(listOf("2000::/3"))))
         if (adblock) rules.put(rule("block").put("domain", JSONArray(listOf("geosite:category-ads-all"))))
         // Мобильный режим: QUIC (UDP 443) блокируем, чтобы браузеры и приложения перешли на TCP —
         // он стабильнее на мобильных сетях с потерями и нередко быстрее
