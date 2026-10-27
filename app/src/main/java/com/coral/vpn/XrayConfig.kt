@@ -36,7 +36,7 @@ object XrayConfig {
               countries: List<String> = emptyList()): String {
         val root = JSONObject()
         root.put("log", JSONObject().put("loglevel", "warning"))
-        root.put("dns", JSONObject().put("servers", JSONArray(listOf("1.1.1.1", "8.8.8.8"))))
+        root.put("dns", dnsConfig(mode))
         root.put("inbounds", JSONArray().put(
             JSONObject()
                 .put("tag", "socks").put("listen", "127.0.0.1").put("port", SOCKS_PORT).put("protocol", "socks")
@@ -50,6 +50,21 @@ object XrayConfig {
             .apply { if (fragment && s.kind == "vless") put(fragmentOutbound()) })
         root.put("routing", routing(mode, adblock, mobile, viaVpn, direct, countries))
         return root.toString(2)
+    }
+
+    /**
+     * DNS самого Xray. Обычный DNS через оператора в России могут подменять (особенно для «неудобных» сайтов), а по подменённому
+     * адресу прежние правила отправляли сайт напрямую, и он видел российский адрес. Поэтому основной DNS — DoH через прокси,
+     * а российские домены, которые и так идут напрямую, разрешает Яндекс DNS (запрос уходит напрямую, как и сам сайт).
+     */
+    private fun dnsConfig(mode: RouteMode): JSONObject {
+        val servers = JSONArray()
+        if (mode == RouteMode.RU_DIRECT) {
+            servers.put(JSONObject().put("address", "77.88.8.8").put("domains", JSONArray(RU_DOMAINS)).put("skipFallback", true))
+        }
+        servers.put(JSONObject().put("address", "https://1.1.1.1/dns-query"))
+        servers.put(JSONObject().put("address", "https://8.8.8.8/dns-query"))
+        return JSONObject().put("tag", "dns-in").put("servers", servers).put("queryStrategy", "UseIPv4")
     }
 
     /** Выход, который режет первый пакет TLS на мелкие куски: фильтры не успевают собрать его и разобрать. */
@@ -115,6 +130,9 @@ object XrayConfig {
 
     private fun routing(mode: RouteMode, adblock: Boolean, mobile: Boolean = false, viaVpn: List<String> = emptyList(), direct: List<String> = emptyList(), countries: List<String> = emptyList()): JSONObject {
         val rules = JSONArray()
+        // DNS-запросы самого Xray: к Яндекс DNS — напрямую, все остальные — через VPN (их нельзя подменить)
+        rules.put(rule("direct").put("inboundTag", JSONArray(listOf("dns-in"))).put("ip", JSONArray(listOf("77.88.8.8"))))
+        rules.put(rule("proxy").put("inboundTag", JSONArray(listOf("dns-in"))))
         if (adblock) rules.put(rule("block").put("domain", JSONArray(listOf("geosite:category-ads-all"))))
         // Мобильный режим: QUIC (UDP 443) блокируем, чтобы браузеры и приложения перешли на TCP —
         // он стабильнее на мобильных сетях с потерями и нередко быстрее
@@ -144,7 +162,8 @@ object XrayConfig {
             }
             RouteMode.ALL -> rules.put(rule("proxy").put("network", "tcp,udp"))
         }
-        return JSONObject().put("domainStrategy", "IPIfNonMatch").put("rules", rules)
+        // AsIs: имя сайта не превращаем в адрес только ради выбора пути, иначе подменённый ответ DNS отправил бы сайт мимо VPN
+        return JSONObject().put("domainStrategy", "AsIs").put("rules", rules)
     }
 
     private fun rule(outbound: String) = JSONObject().put("type", "field").put("outboundTag", outbound)

@@ -64,9 +64,29 @@ class CoreTest {
         assertEquals("Быстрый", Subscription.parseVless(reality).title())
     }
 
+    /** Первые два правила — служебные, для DNS самого Xray: дальше идут правила пользователя, рекламы и режима. */
+    private val DNS_RULES = 2
+
+    @Test fun dnsGoesThroughProxyAndRoutingNeverResolvesNames() {
+        for (mode in RouteMode.values()) {
+            val c = JSONObject(XrayConfig.build(Subscription.parseVless(reality), mode))
+            val r = c.getJSONObject("routing")
+            assertEquals("AsIs", r.getString("domainStrategy"))   // подменённый DNS не должен решать, идёт ли сайт напрямую
+            val dns = c.getJSONObject("dns")
+            assertEquals("dns-in", dns.getString("tag"))
+            assertTrue(dns.toString().contains("https://1.1.1.1/dns-query"))
+            val rules = r.getJSONArray("rules")
+            assertEquals("dns-in", rules.getJSONObject(1).getJSONArray("inboundTag").getString(0))
+            assertEquals("proxy", rules.getJSONObject(1).getString("outboundTag"))
+        }
+        // Яндекс DNS для российских доменов только в режиме «российское напрямую»
+        assertTrue(JSONObject(XrayConfig.build(Subscription.parseVless(reality), RouteMode.RU_DIRECT)).getJSONObject("dns").toString().contains("77.88.8.8"))
+        assertFalse(JSONObject(XrayConfig.build(Subscription.parseVless(reality), RouteMode.ALL)).getJSONObject("dns").toString().contains("77.88.8.8"))
+    }
+
     @Test fun adblockAddsBlockRuleFirst() {
         val c = JSONObject(XrayConfig.build(Subscription.parseVless(reality), RouteMode.ALL, adblock = true))
-        val first = c.getJSONObject("routing").getJSONArray("rules").getJSONObject(0)
+        val first = c.getJSONObject("routing").getJSONArray("rules").getJSONObject(DNS_RULES)
         assertEquals("block", first.getString("outboundTag"))
         assertTrue(first.toString().contains("category-ads-all"))
     }
@@ -104,7 +124,7 @@ class CoreTest {
     @Test fun mobileModeBlocksQuicAndKeepsAlive() {
         val c = JSONObject(XrayConfig.build(Subscription.parseVless(ws), RouteMode.ALL, mobile = true))
         val rules = c.getJSONObject("routing").getJSONArray("rules")
-        val first = rules.getJSONObject(0)
+        val first = rules.getJSONObject(DNS_RULES)
         assertEquals("block", first.getString("outboundTag"))
         assertEquals("443", first.getString("port"))
         assertEquals("udp", first.getString("network"))
@@ -171,10 +191,10 @@ class CoreTest {
         assertEquals(listOf("example.com", "bank.ru", "a-b.org"), XrayConfig.cleanDomains("https://www.Example.com/path, bank.ru:443\n a-b.org; junk ../x"))
         val c = JSONObject(XrayConfig.build(Subscription.parseVless(reality), RouteMode.RU_DIRECT, viaVpn = listOf("example.com"), direct = listOf("bank.ru")))
         val rules = c.getJSONObject("routing").getJSONArray("rules")
-        assertEquals("proxy", rules.getJSONObject(0).getString("outboundTag"))
-        assertTrue(rules.getJSONObject(0).toString().contains("domain:example.com"))
-        assertEquals("direct", rules.getJSONObject(1).getString("outboundTag"))
-        assertTrue(rules.getJSONObject(1).toString().contains("domain:bank.ru"))
+        assertEquals("proxy", rules.getJSONObject(DNS_RULES).getString("outboundTag"))
+        assertTrue(rules.getJSONObject(DNS_RULES).toString().contains("domain:example.com"))
+        assertEquals("direct", rules.getJSONObject(DNS_RULES + 1).getString("outboundTag"))
+        assertTrue(rules.getJSONObject(DNS_RULES + 1).toString().contains("domain:bank.ru"))
     }
 
     @Test fun russianBridgeServerIsRecognized() {
