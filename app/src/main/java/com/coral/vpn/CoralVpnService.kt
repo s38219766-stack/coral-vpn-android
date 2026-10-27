@@ -86,6 +86,19 @@ class CoralVpnService : VpnService() {
                 Diag.log("порядок по статистике оператора: ${keys.joinToString()}")
             }
         }
+        // Память этой сети: способ, который сработал здесь в прошлый раз, пробуем первым (работает и без связи с сервером)
+        val net = if (NetProbe.isWifi(this)) "wifi" else NetProbe.carrier(this).ifBlank { "mobile" }
+        val memory = getSharedPreferences("coral", MODE_PRIVATE)
+        if (auto && keys.size == configs.size) {
+            val last = memory.getString("last_ok_$net", null)
+            val at = keys.indexOf(last)
+            if (last != null && at > 0) {
+                val order = listOf(at) + keys.indices.filter { it != at }
+                configs = order.map { configs[it] }; names = order.map { names.getOrElse(it) { "" } }; keys = order.map { keys[it] }
+                sbs = order.map { sbs.getOrElse(it) { "" } }; cts = order.map { cts.getOrElse(it) { "" } }
+                Diag.log("первым — способ, сработавший в этой сети в прошлый раз: $last")
+            }
+        }
         // Пробуем серверы по очереди, пока один не пропустит трафик
         var chosen: String? = null
         var chosenIdx = -1
@@ -111,6 +124,7 @@ class CoralVpnService : VpnService() {
         }
         check(chosen != null) { "не удалось запустить ядро — отправьте журнал разработчику" }
         Diag.log("шаг 3: выбран «$chosen», всего ${System.currentTimeMillis() - tStart} мс")
+        if (auto && chosenIdx >= 0 && chosen?.endsWith("(без проверки)") != true) keys.getOrNull(chosenIdx)?.let { memory.edit().putString("last_ok_$net", it).apply() }
 
         val builder = Builder()
             .setSession("Coral VPN")
