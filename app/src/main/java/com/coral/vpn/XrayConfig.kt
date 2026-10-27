@@ -33,10 +33,11 @@ object XrayConfig {
 
     fun build(s: Server, mode: RouteMode = RouteMode.RU_DIRECT, adblock: Boolean = false, mobile: Boolean = false, fragment: Boolean = false,
               viaVpn: List<String> = emptyList(), direct: List<String> = emptyList(),
-              countries: List<String> = emptyList()): String {
+              countries: List<String> = emptyList(), compat: Boolean = false): String {
         val root = JSONObject()
         root.put("log", JSONObject().put("loglevel", "warning"))
-        root.put("dns", dnsConfig(mode))
+        // Режим совместимости: прежние правила (обычный DNS, выбор пути по адресу, без блокировки IPv6) — на случай, если новые мешают
+        root.put("dns", if (compat) JSONObject().put("servers", JSONArray(listOf("1.1.1.1", "8.8.8.8"))) else dnsConfig(mode))
         root.put("inbounds", JSONArray().put(
             JSONObject()
                 .put("tag", "socks").put("listen", "127.0.0.1").put("port", SOCKS_PORT).put("protocol", "socks")
@@ -48,7 +49,7 @@ object XrayConfig {
             .put(JSONObject().put("tag", "direct").put("protocol", "freedom"))
             .put(JSONObject().put("tag", "block").put("protocol", "blackhole"))
             .apply { if (fragment && s.kind == "vless") put(fragmentOutbound()) })
-        root.put("routing", routing(mode, adblock, mobile, viaVpn, direct, countries))
+        root.put("routing", routing(mode, adblock, mobile, viaVpn, direct, countries, compat))
         return root.toString(2)
     }
 
@@ -128,14 +129,16 @@ object XrayConfig {
         .map { it.removePrefix("https://").removePrefix("http://").removePrefix("www.").substringBefore("/").substringBefore(":").trim('.') }
         .filter { it.matches(Regex("[a-z0-9-]+(\\.[a-z0-9-]+)+")) }.distinct().take(200)
 
-    private fun routing(mode: RouteMode, adblock: Boolean, mobile: Boolean = false, viaVpn: List<String> = emptyList(), direct: List<String> = emptyList(), countries: List<String> = emptyList()): JSONObject {
+    private fun routing(mode: RouteMode, adblock: Boolean, mobile: Boolean = false, viaVpn: List<String> = emptyList(), direct: List<String> = emptyList(), countries: List<String> = emptyList(), compat: Boolean = false): JSONObject {
         val rules = JSONArray()
-        // DNS-запросы самого Xray: к Яндекс DNS — напрямую, все остальные — через VPN (их нельзя подменить)
-        rules.put(rule("direct").put("inboundTag", JSONArray(listOf("dns-in"))).put("ip", JSONArray(listOf("77.88.8.8"))))
-        rules.put(rule("proxy").put("inboundTag", JSONArray(listOf("dns-in"))))
-        // IPv6 не используем: у части наших серверов (например, основной узел) нет выхода в IPv6, и каждая попытка тянулась по 2–3 секунды,
-        // прежде чем приложение откатывалось на IPv4. Отказ на самом телефоне занимает миллисекунды, и при этом ничего не утекает в обход VPN
-        rules.put(rule("block").put("ip", JSONArray(listOf("::/0"))))
+        if (!compat) {
+            // DNS-запросы самого Xray: к Яндекс DNS — напрямую, все остальные — через VPN (их нельзя подменить)
+            rules.put(rule("direct").put("inboundTag", JSONArray(listOf("dns-in"))).put("ip", JSONArray(listOf("77.88.8.8"))))
+            rules.put(rule("proxy").put("inboundTag", JSONArray(listOf("dns-in"))))
+            // IPv6 не используем: у части наших серверов (например, основной узел) нет выхода в IPv6, и каждая попытка тянулась по 2–3 секунды,
+            // прежде чем приложение откатывалось на IPv4. Отказ на самом телефоне занимает миллисекунды, и при этом ничего не утекает в обход VPN
+            rules.put(rule("block").put("ip", JSONArray(listOf("::/0"))))
+        }
         if (adblock) rules.put(rule("block").put("domain", JSONArray(listOf("geosite:category-ads-all"))))
         // Мобильный режим: QUIC (UDP 443) блокируем, чтобы браузеры и приложения перешли на TCP —
         // он стабильнее на мобильных сетях с потерями и нередко быстрее
@@ -166,7 +169,7 @@ object XrayConfig {
             RouteMode.ALL -> rules.put(rule("proxy").put("network", "tcp,udp"))
         }
         // AsIs: имя сайта не превращаем в адрес только ради выбора пути, иначе подменённый ответ DNS отправил бы сайт мимо VPN
-        return JSONObject().put("domainStrategy", "AsIs").put("rules", rules)
+        return JSONObject().put("domainStrategy", if (compat) "IPIfNonMatch" else "AsIs").put("rules", rules)
     }
 
     private fun rule(outbound: String) = JSONObject().put("type", "field").put("outboundTag", outbound)

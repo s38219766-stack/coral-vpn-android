@@ -529,6 +529,7 @@ private fun SettingsDialog(vm: MainVm, onClose: () -> Unit) {
                 TextButton(onClick = { vm.refresh(); onClose() }) { Text("Обновить подписку") }
                 TextButton(onClick = { ctx.startActivity(Intent(Intent.ACTION_VIEW, Uri.parse(Api.BOT))) }) { Text("Открыть бота (оплата, друзья, бонусы)") }
                 TextButton(onClick = { runCatching { ctx.startActivity(Intent(android.provider.Settings.ACTION_VPN_SETTINGS)) } }) { Text("Постоянная VPN (без VPN интернета нет)") }
+                TextButton(onClick = { vm.changeCompat(!vm.compat) }) { Text(if (vm.compat) "Режим совместимости: ВКЛЮЧЁН (прежние правила)" else "Режим совместимости: выключен") }
                 TextButton(onClick = { vm.changeEco(!vm.eco) }) { Text(if (vm.eco) "Экономия батареи: включена (проверки реже)" else "Экономия батареи: выключена") }
                 TextButton(onClick = { Diag.share(ctx) }) { Text("Отправить журнал разработчику") }
                 TextButton(onClick = { vm.logout(); onClose() }) { Text("Выйти из аккаунта", color = Color(0xFFFF5D6C)) }

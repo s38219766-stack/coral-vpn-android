@@ -95,6 +95,16 @@ class CoreTest {
         }
     }
 
+    @Test fun compatModeRestoresOldRouting() {
+        val c = JSONObject(XrayConfig.build(Subscription.parseVless(reality), RouteMode.RU_DIRECT, compat = true))
+        assertEquals("IPIfNonMatch", c.getJSONObject("routing").getString("domainStrategy"))
+        val rules = c.getJSONObject("routing").getJSONArray("rules").toString()
+        assertFalse(rules.contains("dns-in"))
+        assertFalse(rules.contains("::/0"))
+        assertFalse(c.getJSONObject("dns").has("tag"))
+        assertTrue(c.getJSONObject("dns").toString().contains("1.1.1.1"))
+    }
+
     @Test fun adblockAddsBlockRuleFirst() {
         val c = JSONObject(XrayConfig.build(Subscription.parseVless(reality), RouteMode.ALL, adblock = true))
         val first = c.getJSONObject("routing").getJSONArray("rules").getJSONObject(DNS_RULES)

@@ -35,6 +35,7 @@ class MainVm(app: Application) : AndroidViewModel(app) {
     var adblock by mutableStateOf(prefs.getBoolean("adblock", false))
     var mobile by mutableStateOf(prefs.getBoolean("mobile", false))
     var fragment by mutableStateOf(prefs.getBoolean("fragment", false))
+    var compat by mutableStateOf(prefs.getBoolean("compat", false))   // режим совместимости: прежние правила маршрутов
     var eco by mutableStateOf(prefs.getBoolean("eco_battery", false))   // экономия батареи: реже проверки связи
     var login by mutableStateOf(LoginState.IDLE)
     var notice by mutableStateOf("")
@@ -58,6 +59,7 @@ class MainVm(app: Application) : AndroidViewModel(app) {
 
     fun changeMode(m: RouteMode) { mode = m; prefs.edit().putString("mode", m.name).apply() }
     fun changeMobile(v: Boolean) { mobile = v; prefs.edit().putBoolean("mobile", v).apply() }
+    fun changeCompat(v: Boolean) { compat = v; prefs.edit().putBoolean("compat", v).apply() }
     fun changeEco(v: Boolean) { eco = v; prefs.edit().putBoolean("eco_battery", v).apply() }
     fun changeFragment(v: Boolean) { fragment = v; prefs.edit().putBoolean("fragment", v).apply() }
     fun changeAdblock(v: Boolean) { adblock = v; prefs.edit().putBoolean("adblock", v).apply() }
@@ -153,7 +155,7 @@ class MainVm(app: Application) : AndroidViewModel(app) {
         val ordered = listOf(first) + servers.filter { it != first }
         // «Авто»: если обычные способы не подключились, в конце пробуем те же TCP-серверы с дроблением TLS-рукопожатия
         val fragVariants = if (pick.isBlank() && !fragment) ordered.filter { it.kind == "vless" } else emptyList()
-        fun cfg(sv: Server, frag: Boolean) = XrayConfig.build(sv, mode, adblock, mobile, frag, XrayConfig.cleanDomains(sitesVpn), XrayConfig.cleanDomains(sitesDirect), countries.toList())
+        fun cfg(sv: Server, frag: Boolean) = XrayConfig.build(sv, mode, adblock, mobile, frag, XrayConfig.cleanDomains(sitesVpn), XrayConfig.cleanDomains(sitesDirect), countries.toList(), compat)
         // Банки и госуслуги по умолчанию всегда идут мимо VPN — на уровне системы, а не по адресам сайтов
         val banks = if (banksDirect) AppRules.banks(AppRules.installed(ctx)) else emptySet()
         val (appListMode, appList) = when {
