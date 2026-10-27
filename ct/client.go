@@ -14,6 +14,11 @@ import (
 	"time"
 )
 
+type hostNote struct {
+	ok bool
+	at time.Time
+}
+
 type Client struct {
 	Remote string // сервер или несколько через запятую (мосты): при сбое берём следующий
 	PortLo int
@@ -24,6 +29,7 @@ type Client struct {
 	cur atomic.Int32 // индекс последнего рабочего сервера
 
 	dialFn  func(ctx context.Context, network, addr string) (net.Conn, error) // для тестов
+	seen    map[string]hostNote
 	mu      sync.Mutex
 	udpPort int
 	udpAt   time.Time
@@ -64,6 +70,29 @@ func (cl *Client) addr(now time.Time) string {
 	return net.JoinHostPort(h[int(cl.cur.Load())%len(h)], fmt.Sprint(port))
 }
 
+// noteHost печатает в журнал строку «host ok|fail <адрес>»: приложение по ним шлёт серверу анонимную статистику,
+// какие адреса у какого оператора отвечают. Повторяем строку только при смене состояния или раз в 5 минут.
+func (cl *Client) noteHost(host string, ok bool) {
+	cl.mu.Lock()
+	if cl.seen == nil {
+		cl.seen = map[string]hostNote{}
+	}
+	prev, had := cl.seen[host]
+	now := time.Now()
+	print := !had || prev.ok != ok || now.Sub(prev.at) > 5*time.Minute
+	if print {
+		cl.seen[host] = hostNote{ok, now}
+	}
+	cl.mu.Unlock()
+	if print {
+		if ok {
+			log.Printf("host ok %s", host)
+		} else {
+			log.Printf("host fail %s", host)
+		}
+	}
+}
+
 // connect подключается «гонкой»: сначала пробуем последний рабочий сервер, и если он не ответил за 300 мс, параллельно
 // запускаем следующий (потом следующий), побеждает первый ответивший. Так блокировка адреса стоит доли секунды, а не таймаут.
 // Каждая попытка идёт на случайный порт из диапазона; на каждый сервер даётся две попытки с разными портами.
@@ -99,6 +128,9 @@ func (cl *Client) connect(now time.Time) (net.Conn, error) {
 				dial = d.DialContext
 			}
 			c, err := dial(ctx, "tcp", cl.addrFor(h[idx], now))
+			if err != nil && ctx.Err() == nil { // отмена из-за победителя — не отказ адреса
+				cl.noteHost(h[idx], false)
+			}
 			ch <- result{c, idx, err}
 		}()
 	}
@@ -121,6 +153,7 @@ func (cl *Client) connect(now time.Time) (net.Conn, error) {
 					}
 				}()
 				cl.cur.Store(int32(r.idx))
+				cl.noteHost(h[r.idx], true)
 				return r.c, nil
 			}
 			last = r.err
