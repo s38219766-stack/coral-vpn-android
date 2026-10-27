@@ -65,7 +65,7 @@ class CoreTest {
     }
 
     /** Первые два правила — служебные, для DNS самого Xray: дальше идут правила пользователя, рекламы и режима. */
-    private val DNS_RULES = 2
+    private val DNS_RULES = 3
 
     @Test fun dnsGoesThroughProxyAndRoutingNeverResolvesNames() {
         for (mode in RouteMode.values()) {
@@ -82,6 +82,17 @@ class CoreTest {
         // Яндекс DNS для российских доменов только в режиме «российское напрямую»
         assertTrue(JSONObject(XrayConfig.build(Subscription.parseVless(reality), RouteMode.RU_DIRECT)).getJSONObject("dns").toString().contains("77.88.8.8"))
         assertFalse(JSONObject(XrayConfig.build(Subscription.parseVless(reality), RouteMode.ALL)).getJSONObject("dns").toString().contains("77.88.8.8"))
+    }
+
+    @Test fun ipv6TrafficIsRefusedOnThePhoneNotSentToServers() {
+        for (mode in RouteMode.values()) {
+            val c = JSONObject(XrayConfig.build(Subscription.parseVless(reality), mode))
+            val rules = c.getJSONObject("routing").getJSONArray("rules")
+            val r = rules.getJSONObject(2)
+            assertEquals("block", r.getString("outboundTag"))
+            assertTrue(r.toString().contains("::/0"))
+            assertFalse(c.getJSONArray("outbounds").toString().contains("dns-out"))
+        }
     }
 
     @Test fun adblockAddsBlockRuleFirst() {

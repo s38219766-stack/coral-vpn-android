@@ -133,6 +133,9 @@ object XrayConfig {
         // DNS-запросы самого Xray: к Яндекс DNS — напрямую, все остальные — через VPN (их нельзя подменить)
         rules.put(rule("direct").put("inboundTag", JSONArray(listOf("dns-in"))).put("ip", JSONArray(listOf("77.88.8.8"))))
         rules.put(rule("proxy").put("inboundTag", JSONArray(listOf("dns-in"))))
+        // IPv6 не используем: у части наших серверов (например, основной узел) нет выхода в IPv6, и каждая попытка тянулась по 2–3 секунды,
+        // прежде чем приложение откатывалось на IPv4. Отказ на самом телефоне занимает миллисекунды, и при этом ничего не утекает в обход VPN
+        rules.put(rule("block").put("ip", JSONArray(listOf("::/0"))))
         if (adblock) rules.put(rule("block").put("domain", JSONArray(listOf("geosite:category-ads-all"))))
         // Мобильный режим: QUIC (UDP 443) блокируем, чтобы браузеры и приложения перешли на TCP —
         // он стабильнее на мобильных сетях с потерями и нередко быстрее
