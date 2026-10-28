@@ -92,7 +92,8 @@ class CoralVpnService : VpnService() {
         // Память этой сети: способ, который сработал здесь в прошлый раз, пробуем первым (работает и без связи с сервером)
         val net = if (NetProbe.isWifi(this)) "wifi" else NetProbe.carrier(this).ifBlank { "mobile" }
         val memory = getSharedPreferences("coral", MODE_PRIVATE)
-        if (auto && keys.size == configs.size) {
+        // Память сети нужна, только пока нет статистики оператора: иначе старый запомненный способ (например, с выходом через Германию) вечно стоит первым
+        if (auto && keys.size == configs.size && NetProbe.best(this).isEmpty()) {
             val last = memory.getString("last_ok_$net", null)
             val at = keys.indexOf(last)
             if (last != null && at > 0) {
