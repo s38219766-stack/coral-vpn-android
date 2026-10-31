@@ -24,6 +24,10 @@ class CoralVpnService : VpnService() {
     companion object {
         const val ACTION_STOP = "com.coral.vpn.STOP"
         const val ACTION_SWITCH = "com.coral.vpn.SWITCH"
+        /** «Авто»: сервер, который подключился и проверился дольше этого времени, считается медленным и сравнивается с другими. */
+        const val GOOD_MS = 2200L
+        /** Сторож: проверка связи дольше этого времени три раза подряд считается «связь стала медленной». */
+        const val SLOW_PROBE_MS = 3000L
         const val EXTRA_CONFIGS = "configs"
         const val EXTRA_NAMES = "names"
         const val EXTRA_APPS = "apps"
@@ -103,9 +107,23 @@ class CoralVpnService : VpnService() {
                 Diag.log("первым — способ, сработавший в этой сети в прошлый раз: $last")
             }
         }
+        autoMode = auto
+        // «Авто»: замеряем, до каких серверов сейчас доходит соединение и насколько быстро, и пробуем сначала самые быстрые
+        if (auto && configs.size > 1) {
+            runCatching {
+                val eps = configs.indices.map { AutoPick.endpoint(configs[it], cts.getOrElse(it) { "" }) }
+                val rtts = AutoPick.measure(eps)
+                val ord = AutoPick.order(rtts, eps.map { it != null }, configs.indices.map { keys.getOrNull(it) == "fragment" })
+                Diag.log("авто: замер доступности: " + configs.indices.joinToString { i -> (names.getOrElse(i) { "?" }) + " " + (rtts[i]?.let { "$it мс" } ?: if (eps[i] == null) "не замеряется" else "нет ответа") })
+                configs = ord.map { configs[it] }; names = ord.map { names.getOrElse(it) { "" } }; keys = ord.map { keys.getOrElse(it) { "" } }
+                sbs = ord.map { sbs.getOrElse(it) { "" } }; cts = ord.map { cts.getOrElse(it) { "" } }
+                Diag.log("авто: порядок попыток: " + names.joinToString())
+            }.onFailure { Diag.log("авто: замер не удался: ${it.message}") }
+        }
         // Пробуем серверы по очереди, пока один не пропустит трафик
         var chosen: String? = null
         var chosenIdx = -1
+        val workable = mutableListOf<Pair<Int, Long>>()
         for ((i, config) in configs.withIndex()) {
             val label = names.getOrNull(i) ?: "сервер ${i + 1}"
             message.value = "Проверка: $label"
@@ -114,11 +132,28 @@ class CoralVpnService : VpnService() {
             val ok = runCatching { tryServer(config, assets, sbConfig = sbs.getOrElse(i) { "" }, ctSpec = cts.getOrElse(i) { "" }) }.onFailure { Diag.log("ошибка: ${it.message}") }.getOrDefault(false)
             keys.getOrNull(i)?.let { NetProbe.report(this, it, ok, (System.currentTimeMillis() - t0).toInt()) }
             Diag.log("сервер «$label»: ${if (ok) "готов" else "не прошёл"} за ${System.currentTimeMillis() - t0} мс")
-            if (ok) { chosen = label; chosenIdx = i; break }
+            if (ok) {
+                val took = System.currentTimeMillis() - t0
+                workable.add(i to took)
+                // «Авто»: если сервер работает, но медленно, смотрим ещё до двух других и берём самый быстрый из рабочих
+                if (!auto || took <= GOOD_MS || workable.size >= 3 || i == configs.lastIndex) { chosen = label; chosenIdx = i; break }
+                Diag.log("авто: «$label» работает, но медленно ($took мс), проверяем другие")
+            }
             xray?.destroy(); xray = null
             singbox?.destroy(); singbox = null
             ct?.destroy(); ct = null
-            Diag.log("сервер «$label» не отвечает, пробуем следующий")
+            if (!ok) Diag.log("сервер «$label» не отвечает, пробуем следующий")
+        }
+        if (auto && chosen != null) {
+            // выбранный последним может быть не самым быстрым из проверенных: возвращаемся к лучшему
+            val bestW = workable.minByOrNull { it.second }
+            if (bestW != null && bestW.first != chosenIdx && bestW.second + 400 < (workable.lastOrNull()?.second ?: 0L)) {
+                xray?.destroy(); xray = null; singbox?.destroy(); singbox = null; ct?.destroy(); ct = null
+                val bi = bestW.first
+                Diag.log("авто: самый быстрый из проверенных — «${names.getOrElse(bi) { "?" }}» (${bestW.second} мс), возвращаемся к нему")
+                val again = runCatching { tryServer(configs[bi], assets, sbConfig = sbs.getOrElse(bi) { "" }, ctSpec = cts.getOrElse(bi) { "" }) }.getOrDefault(false)
+                if (again) { chosen = names.getOrNull(bi) ?: "сервер ${bi + 1}"; chosenIdx = bi }
+            }
         }
         if (chosen == null && configs.isNotEmpty()) {
             // Сама проверка могла ошибиться — не отказываем, а подключаемся к первому серверу как есть
@@ -178,6 +213,8 @@ class CoralVpnService : VpnService() {
         if (chosenIdx >= 0) watch(lists!!, chosenIdx)
     }
 
+    @Volatile private var autoMode = false
+
     private class Lists(val configs: List<String>, val names: List<String>, val keys: List<String>, val sbs: List<String>, val cts: List<String>, val assets: File)
 
     private fun nameOf(l: Lists, i: Int) = l.names.getOrNull(i) ?: "сервер ${i + 1}"
@@ -207,6 +244,8 @@ class CoralVpnService : VpnService() {
         currentIdx = start
         Thread {
             var fails = 0
+            var slow = 0
+            var lastSmart = 0L
             var tick = 0
             var prevTx = 0L; var prevRx = 0L
             while (gen == generation && state.value == VpnState.ON) {
@@ -227,11 +266,23 @@ class CoralVpnService : VpnService() {
                         Diag.log("система: активная сеть — VPN: ${caps?.hasTransport(NetworkCapabilities.TRANSPORT_VPN)}, интернет: ${caps?.hasCapability(NetworkCapabilities.NET_CAPABILITY_INTERNET)}, проверена системой: ${caps?.hasCapability(NetworkCapabilities.NET_CAPABILITY_VALIDATED)}")
                     }
                 }
-                if (probe()) { fails = 0; continue }
-                if (++fails < 2) continue
-                fails = 0
-                Diag.log("сторож: связь пропала, ищем рабочий способ")
-                message.value = "Связь пропала, переключаемся…"
+                val tp = System.currentTimeMillis()
+                val alive = probe()
+                val pms = System.currentTimeMillis() - tp
+                if (alive) {
+                    fails = 0
+                    slow = if (autoMode && pms > SLOW_PROBE_MS) slow + 1 else 0
+                    if (slow < 3 || System.currentTimeMillis() - lastSmart < 600_000L) continue
+                    slow = 0
+                    lastSmart = System.currentTimeMillis()
+                    Diag.log("авто: связь стала медленной (проверка занимает $pms мс), пробуем другой сервер")
+                    message.value = "Связь медленная, ищем лучший сервер…"
+                } else {
+                    if (++fails < 2) continue
+                    fails = 0
+                    Diag.log("сторож: связь пропала, ищем рабочий способ")
+                    message.value = "Связь пропала, переключаемся…"
+                }
                 val found = switchFrom(l, currentIdx, gen, "сторож")
                 if (found == -2) return@Thread
                 if (found >= 0) {

@@ -56,6 +56,7 @@ class MainActivity : ComponentActivity() {
         super.onCreate(savedInstanceState)
         handleDeepLink(intent)
         if (vm.loggedIn) vm.refresh()
+        WlScan.flush(applicationContext)
         setContent {
             MaterialTheme(colorScheme = darkColorScheme(primary = Coral, background = Ink, surface = Ink)) {
                 if (vm.loggedIn) HomeScreen(vm) else LoginScreen(vm)
@@ -520,6 +521,8 @@ private fun SitesEditor(vm: MainVm) {
 @Composable
 private fun SettingsDialog(vm: MainVm, onClose: () -> Unit) {
     val ctx = LocalContext.current
+    var scan by remember { mutableStateOf(false) }
+    if (scan) WlScanDialog { scan = false }
     AlertDialog(
         onDismissRequest = onClose,
         confirmButton = { TextButton(onClick = onClose) { Text("Закрыть") } },
@@ -531,9 +534,39 @@ private fun SettingsDialog(vm: MainVm, onClose: () -> Unit) {
                 TextButton(onClick = { runCatching { ctx.startActivity(Intent(android.provider.Settings.ACTION_VPN_SETTINGS)) } }) { Text("Постоянная VPN (без VPN интернета нет)") }
                 TextButton(onClick = { vm.changeCompat(!vm.compat) }) { Text(if (vm.compat) "Правила маршрутов: прежние (надёжные). Нажмите, чтобы включить новые (экспериментально)" else "Правила маршрутов: новые (экспериментально). Нажмите, чтобы вернуть прежние") }
                 TextButton(onClick = { vm.changeEco(!vm.eco) }) { Text(if (vm.eco) "Экономия батареи: включена (проверки реже)" else "Экономия батареи: выключена") }
+                TextButton(onClick = { scan = true }) { Text("Проверить белые списки (без VPN)") }
                 TextButton(onClick = { Diag.share(ctx) }) { Text("Отправить журнал разработчику") }
                 TextButton(onClick = { vm.logout(); onClose() }) { Text("Выйти из аккаунта", color = Color(0xFFFF5D6C)) }
                 Text("Coral VPN ${runCatching { ctx.packageManager.getPackageInfo(ctx.packageName, 0).versionName }.getOrNull().orEmpty()}", color = Muted, fontSize = 12.sp)
+            }
+        },
+    )
+}
+
+@Composable
+private fun WlScanDialog(onClose: () -> Unit) {
+    val ctx = LocalContext.current
+    val vpn = remember { WlScan.vpnActive(ctx) }
+    var text by remember { mutableStateOf<String?>(if (vpn) "Сначала отключите VPN: с включённым VPN проверка ничего не покажет." else null) }
+    LaunchedEffect(Unit) {
+        if (!vpn) text = kotlinx.coroutines.withContext(kotlinx.coroutines.Dispatchers.IO) { WlScan.runAndStore(ctx.applicationContext) }
+    }
+    AlertDialog(
+        onDismissRequest = onClose,
+        confirmButton = { TextButton(onClick = onClose) { Text("Закрыть") } },
+        dismissButton = {
+            if (text != null && !vpn) TextButton(onClick = {
+                val cm = ctx.getSystemService(android.content.ClipboardManager::class.java)
+                cm.setPrimaryClip(android.content.ClipData.newPlainText("wl", text))
+            }) { Text("Копировать") }
+        },
+        title = { Text("Белые списки") },
+        text = {
+            Box(Modifier.heightIn(max = 380.dp)) {
+                val t = text
+                if (t == null) Row(verticalAlignment = Alignment.CenterVertically, horizontalArrangement = Arrangement.spacedBy(12.dp)) {
+                    CircularProgressIndicator(Modifier.size(28.dp)); Text("Проверяю, до 40 секунд…")
+                } else Text(t, fontSize = 13.sp, modifier = Modifier.verticalScroll(rememberScrollState()))
             }
         },
     )

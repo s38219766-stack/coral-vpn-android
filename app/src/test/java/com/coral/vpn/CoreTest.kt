@@ -345,4 +345,24 @@ class CoreTest {
         assertEquals("Финляндия 2", fi2.title())
         assertEquals("reality_fi", fi2.transportKey())
     }
+
+    @Test fun autoPickOrdersByMeasuredSpeedAndKeepsFallbacksLast() {
+        // [0] медленный 300 мс, [1] быстрый 40 мс, [2] недоступный, [3] UDP (не замеряется), [4] запасной «дробление»
+        val rtt = listOf<Long?>(300, 40, null, null, 10)
+        val order = AutoPick.order(rtt, listOf(true, true, true, false, true), listOf(false, false, false, false, true))
+        assertEquals(listOf(1, 0, 3, 2, 4), order)
+    }
+
+    @Test fun autoPickKeepsStatsOrderForSimilarMeasurements() {
+        // 120 и 150 мс различаются меньше порога: остаётся исходный порядок (из статистики оператора)
+        val order = AutoPick.order(listOf<Long?>(150, 120), listOf(true, true), listOf(false, false))
+        assertEquals(listOf(0, 1), order)
+    }
+
+    @Test fun autoPickFindsEndpoints() {
+        val cfg = """{"outbounds":[{"protocol":"vless","settings":{"vnext":[{"address":"13.140.95.212","port":8443}]}}]}"""
+        assertEquals("13.140.95.212" to 8443, AutoPick.endpoint(cfg, ""))
+        assertEquals("1.2.3.4" to 21499, AutoPick.endpoint("{}", "1.2.3.4,5.6.7.8|21000:21999|aabb"))
+        assertNull(AutoPick.endpoint("""{"outbounds":[{"protocol":"hysteria2","settings":{}}]}""", ""))
+    }
 }
