@@ -288,6 +288,8 @@ private fun HomeScreen(vm: MainVm) {
             TextButton(onClick = { settings = true }) { Text("⚙ Настройки", color = Muted) }
         }
 
+        WlBanner()
+
         vm.update?.let { v ->
             GlassCard {
                 Text("Доступна новая версия: $v", color = Color.White, fontWeight = FontWeight.Bold)
@@ -570,4 +572,26 @@ private fun WlScanDialog(onClose: () -> Unit) {
             }
         },
     )
+}
+
+/** Баннер «в вашей сети белые списки»: показывается, если фоновая проверка нашла белый список. Гарантий не даёт: способ обхода ещё проверяется. */
+@Composable
+private fun WlBanner() {
+    val ctx = LocalContext.current
+    var st by remember { mutableStateOf(WlScan.state(ctx)) }
+    var hide by remember { mutableStateOf(WlScan.hidden(ctx)) }
+    var scan by remember { mutableStateOf(false) }
+    LaunchedEffect(Unit) {
+        kotlinx.coroutines.withContext(kotlinx.coroutines.Dispatchers.IO) { WlScan.autoCheck(ctx.applicationContext) }
+        st = WlScan.state(ctx)
+    }
+    if (scan) WlScanDialog { scan = false }
+    if (st == "on" && !hide && !NetProbe.isWifi(ctx)) GlassCard {
+        Text("В вашей сети обнаружены белые списки", color = Color.White, fontWeight = FontWeight.Bold)
+        Text("Оператор пропускает только часть сайтов. Режим «Авто» сам пробует способы, которые могут пройти (через Россию, наш протокол), но гарантии нет: этот способ ещё проверяется. Если не подключается, пришлите журнал из настроек.", color = Muted, fontSize = 12.sp)
+        Row(horizontalArrangement = Arrangement.spacedBy(8.dp)) {
+            TextButton(onClick = { scan = true }) { Text("Проверить способы") }
+            TextButton(onClick = { WlScan.hide(ctx); hide = true }) { Text("Скрыть на 6 часов", color = Muted) }
+        }
+    }
 }

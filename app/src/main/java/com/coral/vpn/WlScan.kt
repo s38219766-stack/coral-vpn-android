@@ -102,6 +102,30 @@ object WlScan {
         return sb.toString().trim()
     }
 
+    /** Быстрая проверка (около 4 с): ya.ru открывается, а наши адреса с нейтральным именем — нет. Так выглядит белый список. */
+    fun detect(): Boolean {
+        if (!hello(null, 443, "ya.ru", 3500).first) return false
+        return TARGETS.none { (_, hp) -> hello(hp.first, hp.second, "example.org", 3000).first }
+    }
+
+    fun state(ctx: Context): String = prefs(ctx).getString("wl_state", "") ?: ""
+
+    fun hidden(ctx: Context): Boolean = System.currentTimeMillis() < prefs(ctx).getLong("wl_hide", 0)
+
+    fun hide(ctx: Context) { prefs(ctx).edit().putLong("wl_hide", System.currentTimeMillis() + 6 * 3600_000L).apply() }
+
+    /** Не чаще раза в 3 часа, только в мобильной сети и без VPN: ищет белый список; если нашёл, делает полный скан и ставит его в очередь на отправку. */
+    fun autoCheck(ctx: Context) {
+        if (NetProbe.isWifi(ctx) || vpnActive(ctx)) return
+        val p = prefs(ctx)
+        if (System.currentTimeMillis() - p.getLong("wl_at", 0) < 3 * 3600_000L) return
+        p.edit().putLong("wl_at", System.currentTimeMillis()).apply()
+        val on = detect()
+        p.edit().putString("wl_state", if (on) "on" else "off").apply()
+        Diag.log("wl: ${if (on) "обнаружен белый список" else "белого списка нет"}")
+        if (on) runAndStore(ctx)
+    }
+
     private fun prefs(ctx: Context) = ctx.getSharedPreferences("coral", Context.MODE_PRIVATE)
 
     /** Запускает проверку, пишет в журнал, ставит отправку в очередь и пробует отправить. Возвращает текст для экрана. */
