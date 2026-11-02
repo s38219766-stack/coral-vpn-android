@@ -7,11 +7,13 @@ type Padder interface {
 	Pad(dataLen int, rng io.Reader) int
 }
 
-// BucketPadder выравнивает тело кадра до ближайшей «корзины», поэтому по длине на проводе нельзя понять размер данных.
+// BucketPadder выравнивает до ближайшей «корзины» только малые записи (по длине на проводе нельзя понять размер данных).
+// Крупные записи несут поток данных: большие корзины раздували бы их в разы (запись в 1411 байт превращалась в 4096), поэтому
+// для них только небольшой случайный добавок. Размеры крупных записей у настоящего TLS тоже произвольные.
 type BucketPadder struct{ Buckets []int }
 
-// DefaultPadder — корзины, близкие к размерам обычных TLS-записей.
-var DefaultPadder Padder = BucketPadder{Buckets: []int{128, 256, 512, 1024, 1400, 4096, 16000}}
+// DefaultPadder — корзины для малых записей, до размера типичного TCP-сегмента.
+var DefaultPadder Padder = BucketPadder{Buckets: []int{128, 256, 512, 1024, 1400}}
 
 func (b BucketPadder) Pad(dataLen int, rng io.Reader) int {
 	body := dataLen + frameHdr
@@ -22,7 +24,7 @@ func (b BucketPadder) Pad(dataLen int, rng io.Reader) int {
 	}
 	var r [1]byte
 	io.ReadFull(rng, r[:])
-	return int(r[0]) % 64
+	return int(r[0]) % 32
 }
 
 // NoPadding отключает дополнение (для замеров накладных расходов и тестов).
