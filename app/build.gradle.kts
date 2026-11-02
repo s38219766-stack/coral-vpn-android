@@ -13,7 +13,7 @@ android {
         minSdk = 26
         targetSdk = 34
         versionCode = (project.findProperty("vc") as String?)?.toInt() ?: 1
-        versionName = "0.16.0"
+        versionName = "0.16.1"
         ndk { abiFilters += "arm64-v8a" }
     }
     packaging {
