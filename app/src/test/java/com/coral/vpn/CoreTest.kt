@@ -365,4 +365,30 @@ class CoreTest {
         assertEquals("1.2.3.4" to 21499, AutoPick.endpoint("{}", "1.2.3.4,5.6.7.8|21000:21999|aabb"))
         assertNull(AutoPick.endpoint("""{"outbounds":[{"protocol":"hysteria2","settings":{}}]}""", ""))
     }
+
+    @Test fun parsesCt2ServerFromExtra() {
+        val pub = "a".repeat(64); val key = "b".repeat(64)
+        val json = """{"servers":[{"kind":"ct2","name":"Наш протокол v2 (Coral)","host":"13.140.95.212","port":9600,"ct2_pub":"$pub","ct2_key":"$key","ss_method":"2022-blake3-aes-128-gcm","password":"srv:usr"}]}"""
+        val s = Subscription.parseExtra(json).single()
+        assertEquals("ct2", s.kind)
+        assertEquals(pub, s.ct2Pub)
+        assertEquals(key, s.ctKey)
+        assertEquals(9600, s.port)
+        assertEquals("ct2", s.transportKey())
+        assertEquals("ct2|13.140.95.212|9600|$pub|$key", ctSpec(s))
+    }
+
+    @Test fun ct2SingBoxConfigPointsToLocalClientWithoutMultiplex() {
+        val s = Subscription.parseExtra("""{"servers":[{"kind":"ct2","name":"x","host":"1.2.3.4","port":9600,"ct2_pub":"${"a".repeat(64)}","ct2_key":"${"b".repeat(64)}","ss_method":"2022-blake3-aes-128-gcm","password":"srv:usr"}]}""").single()
+        val out = JSONObject(SingBoxConfig.build(s)!!).getJSONArray("outbounds").getJSONObject(0)
+        assertEquals("shadowsocks", out.getString("type"))
+        assertEquals("127.0.0.1", out.getString("server"))
+        assertEquals(SingBoxConfig.CT2_PORT, out.getInt("server_port"))
+        assertFalse(out.has("multiplex"))
+    }
+
+    @Test fun autoPickFindsCt2Endpoint() {
+        assertEquals("1.2.3.4" to 9600, AutoPick.endpoint("{}", "ct2|1.2.3.4|9600|pub|key"))
+        assertNull(AutoPick.endpoint("{}", "ct2|1.2.3.4|notaport|pub|key"))
+    }
 }

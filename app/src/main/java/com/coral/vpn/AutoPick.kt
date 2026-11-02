@@ -16,6 +16,11 @@ object AutoPick {
 
     /** Адрес и порт для замера: для Xray-конфига — сервер из vnext, для нашего протокола — первый хост и середина диапазона портов. */
     fun endpoint(config: String, ctSpec: String): Pair<String, Int>? {
+        if (ctSpec.startsWith("ct2|")) {
+            val p = ctSpec.split("|")   // ct2|host|port|pub|key
+            val host = p.getOrElse(1) { "" }.split(",").firstOrNull { it.isNotBlank() } ?: return null
+            return host to (p.getOrElse(2) { "" }.toIntOrNull() ?: return null)
+        }
         if (ctSpec.isNotBlank()) {
             val p = ctSpec.split("|")
             val host = p.getOrElse(0) { "" }.split(",").firstOrNull { it.isNotBlank() } ?: return null

@@ -179,7 +179,11 @@ class MainVm(app: Application) : AndroidViewModel(app) {
 }
 
 /** Параметры ct-client для сервера Coral Transport: «хост|диапазон портов|ключ»; для остальных пусто. */
-fun ctSpec(s: Server): String = if (s.kind == "ct") "${s.host}|${s.ports}|${s.ctKey}" else ""
+fun ctSpec(s: Server): String = when (s.kind) {
+    "ct" -> "${s.host}|${s.ports}|${s.ctKey}"
+    "ct2" -> "ct2|${s.host}|${s.port}|${s.ct2Pub}|${s.ctKey}"   // Coral Transport v2: хост, порт, публичный ключ сервера, личный ключ
+    else -> ""
+}
 
 /** Ключ транспорта для статистики: по нему сервер знает, что работает у какого оператора. */
 fun Server.transportKey(): String = when {
@@ -187,6 +191,7 @@ fun Server.transportKey(): String = when {
     kind == "tuic" -> "tuic"
     kind == "ss2022" -> "ss2022"
     kind == "ct" -> "ct"
+    kind == "ct2" -> "ct2"
     kind == "shadowtls" -> "shadowtls"
     network == "ws" -> "ws"
     network == "xhttp" -> "xhttp"

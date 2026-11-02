@@ -347,6 +347,7 @@ class CoralVpnService : VpnService() {
 
     /** Coral Transport: локальный ct-client принимает Shadowsocks от sing-box и отправляет его на сервер в нашей форме. */
     private fun startCt(spec: String): Boolean {
+        if (spec.startsWith("ct2|")) return startCt2(spec)
         val (host0, ports, key) = spec.split("|").let { Triple(it.getOrElse(0) { "" }, it.getOrElse(1) { "" }, it.getOrElse(2) { "" }) }
         val bin = File(applicationInfo.nativeLibraryDir, "libct.so")
         if (!bin.exists()) { Diag.log("ct в сборке нет"); return false }
@@ -371,6 +372,38 @@ class CoralVpnService : VpnService() {
         repeat(30) {
             if (!proc.isAlive) return false
             if (runCatching { java.net.Socket("127.0.0.1", SingBoxConfig.CT_PORT).use { true } }.getOrDefault(false)) return true
+            Thread.sleep(100)
+        }
+        return proc.isAlive
+    }
+
+    /** Coral Transport v2: локальный клиент ct2c принимает Shadowsocks от sing-box и несёт его на сервер (Noise, TLS-маска, мультиплекс). */
+    private fun startCt2(spec: String): Boolean {
+        val p = spec.split("|")   // ct2|host|port|pub|key
+        val host0 = p.getOrElse(1) { "" }; val port = p.getOrElse(2) { "" }; val pub = p.getOrElse(3) { "" }; val key = p.getOrElse(4) { "" }
+        val bin = File(applicationInfo.nativeLibraryDir, "libct2.so")
+        if (!bin.exists()) { Diag.log("ct2 в сборке нет"); return false }
+        if (pub.length != 64 || key.length != 64 || port.toIntOrNull() == null) { Diag.log("ct2: неверные параметры сервера"); return false }
+        // У Go-клиента на Android нет системного DNS: имя узла переводим в IP здесь
+        val host = host0.split(",").firstOrNull { it.isNotBlank() }?.let { h ->
+            if (h.any { it.isLetter() }) runCatching { InetAddress.getAllByName(h).filterIsInstance<Inet4Address>().firstOrNull()?.hostAddress }.getOrNull() else h
+        }
+        if (host.isNullOrEmpty()) { Diag.log("ct2: не удалось определить IP $host0"); return false }
+        val pb = ProcessBuilder(bin.path, "-listen", "127.0.0.1:${SingBoxConfig.CT2_PORT}", "-server", "$host:$port", "-server-pub", pub)
+        pb.environment()["CT2_USER_KEY"] = key
+        val proc = pb.redirectErrorStream(true).start()
+        ct = proc
+        Thread {
+            runCatching {
+                proc.inputStream.bufferedReader().forEachLine { line ->
+                    Diag.log("ct2: ${line.take(300)}")
+                    Regex("host (ok|fail) ([0-9.]{7,15})").find(line)?.let { m -> NetProbe.reportHost(this, m.groupValues[2], m.groupValues[1] == "ok") }
+                }
+            }
+        }.start()
+        repeat(30) {
+            if (!proc.isAlive) return false
+            if (runCatching { java.net.Socket("127.0.0.1", SingBoxConfig.CT2_PORT).use { true } }.getOrDefault(false)) return true
             Thread.sleep(100)
         }
         return proc.isAlive
