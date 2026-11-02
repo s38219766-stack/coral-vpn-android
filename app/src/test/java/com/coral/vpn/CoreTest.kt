@@ -378,13 +378,14 @@ class CoreTest {
         assertEquals("ct2|13.140.95.212|9600|$pub|$key", ctSpec(s))
     }
 
-    @Test fun ct2SingBoxConfigPointsToLocalClientWithoutMultiplex() {
+    @Test fun ct2SingBoxConfigPointsToLocalClientWithMultiplexForUdp() {
         val s = Subscription.parseExtra("""{"servers":[{"kind":"ct2","name":"x","host":"1.2.3.4","port":9600,"ct2_pub":"${"a".repeat(64)}","ct2_key":"${"b".repeat(64)}","ss_method":"2022-blake3-aes-128-gcm","password":"srv:usr"}]}""").single()
         val out = JSONObject(SingBoxConfig.build(s)!!).getJSONArray("outbounds").getJSONObject(0)
         assertEquals("shadowsocks", out.getString("type"))
         assertEquals("127.0.0.1", out.getString("server"))
         assertEquals(SingBoxConfig.CT2_PORT, out.getInt("server_port"))
-        assertFalse(out.has("multiplex"))
+        // мультиплекс обязателен: через него идёт UDP, а клиент ct2 принимает только TCP
+        assertEquals("smux", out.getJSONObject("multiplex").getString("protocol"))
     }
 
     @Test fun autoPickFindsCt2Endpoint() {

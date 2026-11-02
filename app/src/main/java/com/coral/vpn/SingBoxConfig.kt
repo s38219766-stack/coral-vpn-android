@@ -31,9 +31,12 @@ object SingBoxConfig {
                 final = "out"
             }
             "ct2" -> {
-                // Мультиплекс делает сам ct2 (много потоков в одном сеансе), поэтому multiplex sing-box не включаем: двойной мультиплекс только вредит
+                // Мультиплекс sing-box нужен не только для скорости: UDP (QUIC, звонки, игры) идёт внутри потоков, а клиент ct2 принимает
+                // только TCP. Без него UDP уходил в пустоту на 127.0.0.1:19600 и приложения на Wi-Fi (где QUIC не блокируется) тормозили.
+                // Тот же режим, что у ct: сервер (ss-in) принимает мультиплекс. Ниже ct2 дополнительно держит свои сеансы.
                 outbounds.put(JSONObject().put("type", "shadowsocks").put("tag", "out")
-                    .put("server", "127.0.0.1").put("server_port", CT2_PORT).put("method", s.ssMethod).put("password", s.secret))
+                    .put("server", "127.0.0.1").put("server_port", CT2_PORT).put("method", s.ssMethod).put("password", s.secret)
+                    .put("multiplex", JSONObject().put("enabled", true).put("protocol", "smux").put("max_connections", 4).put("min_streams", 4)))
                 final = "out"
             }
             "ss2022" -> {
