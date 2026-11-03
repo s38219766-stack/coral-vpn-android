@@ -59,13 +59,20 @@ object AutoPick {
         return if (best < 0) null else best
     }
 
+    /** Добавка к замеру пинга по виду способа (мс): WebSocket и XHTTP идут через сайт-маску и заметно медленнее. */
+    const val SLOW_PENALTY_MS = 170L
+
+    fun penaltyFor(key: String?): Long = if (key == "ws" || key == "xhttp") SLOW_PENALTY_MS else 0L
+
     /** Порядок индексов: сначала быстрые, потом то, что замерить нельзя, потом недоступные; способы «в конец» (дробление) остаются последними. */
-    fun order(rtt: List<Long?>, measurable: List<Boolean>, last: List<Boolean>): List<Int> {
+    fun order(rtt: List<Long?>, measurable: List<Boolean>, last: List<Boolean>, penalty: List<Long> = emptyList()): List<Int> {
+        // penalty — добавка к замеру для способов, которые заведомо медленнее при том же пинге (WebSocket через сайт-маску: на деле соединение
+        // 1,5–2 с против 0,4 с у Reality), чтобы они выигрывали только при заметно лучшем пинге или когда остальные недоступны
         fun key(i: Int): Long = when {
             last[i] -> Long.MAX_VALUE
             !measurable[i] -> NEUTRAL_MS / TIE_MS
             rtt[i] == null -> Long.MAX_VALUE - 1
-            else -> rtt[i]!! / TIE_MS
+            else -> (rtt[i]!! + penalty.getOrElse(i) { 0L }) / TIE_MS
         }
         return rtt.indices.sortedWith(compareBy<Int>({ key(it) }, { it }))
     }

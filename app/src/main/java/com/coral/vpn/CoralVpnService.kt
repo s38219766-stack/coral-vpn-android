@@ -113,7 +113,7 @@ class CoralVpnService : VpnService() {
             runCatching {
                 val eps = configs.indices.map { AutoPick.endpoint(configs[it], cts.getOrElse(it) { "" }) }
                 val rtts = AutoPick.measure(eps)
-                val ord = AutoPick.order(rtts, eps.map { it != null }, configs.indices.map { keys.getOrNull(it) == "fragment" })
+                val ord = AutoPick.order(rtts, eps.map { it != null }, configs.indices.map { keys.getOrNull(it) == "fragment" }, configs.indices.map { AutoPick.penaltyFor(keys.getOrNull(it)) })
                 Diag.log("авто: замер доступности: " + configs.indices.joinToString { i -> (names.getOrElse(i) { "?" }) + " " + (rtts[i]?.let { "$it мс" } ?: if (eps[i] == null) "не замеряется" else "нет ответа") })
                 configs = ord.map { configs[it] }; names = ord.map { names.getOrElse(it) { "" } }; keys = ord.map { keys.getOrElse(it) { "" } }
                 sbs = ord.map { sbs.getOrElse(it) { "" } }; cts = ord.map { cts.getOrElse(it) { "" } }

@@ -392,4 +392,13 @@ class CoreTest {
         assertEquals("1.2.3.4" to 9600, AutoPick.endpoint("{}", "ct2|1.2.3.4|9600|pub|key"))
         assertNull(AutoPick.endpoint("{}", "ct2|1.2.3.4|notaport|pub|key"))
     }
+
+    @Test fun autoPickPrefersRealityOverSlowWsWithSimilarPing() {
+        // WebSocket чуть ближе по пингу (60 против 120 мс), но заведомо медленнее: со штрафом первым должен идти Reality
+        val order = AutoPick.order(listOf<Long?>(60, 120), listOf(true, true), listOf(false, false), listOf(AutoPick.penaltyFor("ws"), AutoPick.penaltyFor("reality_fi")))
+        assertEquals(listOf(1, 0), order)
+        // но если Reality недоступен, WebSocket остаётся рабочим запасным
+        val fallback = AutoPick.order(listOf<Long?>(60, null), listOf(true, true), listOf(false, false), listOf(AutoPick.penaltyFor("ws"), 0L))
+        assertEquals(listOf(0, 1), fallback)
+    }
 }
