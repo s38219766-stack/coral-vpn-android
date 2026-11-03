@@ -290,6 +290,15 @@ private fun HomeScreen(vm: MainVm) {
 
         WlBanner()
 
+        val leak by CoralVpnService.leakLevel.collectAsState()
+        if (state == VpnState.ON) Leaks.advice(leak)?.let { text ->
+            GlassCard {
+                Text("Защита при обрыве VPN", color = Color.White, fontWeight = FontWeight.Bold)
+                Text(text, color = Muted, fontSize = 12.sp)
+                Button(onClick = { runCatching { ctx.startActivity(Intent(android.provider.Settings.ACTION_VPN_SETTINGS)) } }, modifier = Modifier.fillMaxWidth()) { Text("Открыть настройки VPN") }
+            }
+        }
+
         vm.update?.let { v ->
             GlassCard {
                 Text("Доступна новая версия: $v", color = Color.White, fontWeight = FontWeight.Bold)

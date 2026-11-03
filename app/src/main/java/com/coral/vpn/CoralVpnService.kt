@@ -39,6 +39,8 @@ class CoralVpnService : VpnService() {
         const val EXTRA_AUTO = "auto"
         val state = MutableStateFlow(VpnState.OFF)
         val message = MutableStateFlow("")
+        /** Уровень защиты от утечек при обрыве (см. Leaks): обновляется, когда VPN включён. */
+        val leakLevel = MutableStateFlow(Leaks.Level.UNKNOWN)
     }
 
     private var tun: ParcelFileDescriptor? = null
@@ -139,16 +141,14 @@ class CoralVpnService : VpnService() {
                 if (!auto || took <= GOOD_MS || workable.size >= 3 || i == configs.lastIndex) { chosen = label; chosenIdx = i; break }
                 Diag.log("авто: «$label» работает, но медленно ($took мс), проверяем другие")
             }
-            xray?.destroy(); xray = null
-            singbox?.destroy(); singbox = null
-            ct?.destroy(); ct = null
+            stopCores()
             if (!ok) Diag.log("сервер «$label» не отвечает, пробуем следующий")
         }
         if (auto && chosen != null) {
             // выбранный последним может быть не самым быстрым из проверенных: возвращаемся к лучшему
             val bestW = workable.minByOrNull { it.second }
             if (bestW != null && bestW.first != chosenIdx && bestW.second + 400 < (workable.lastOrNull()?.second ?: 0L)) {
-                xray?.destroy(); xray = null; singbox?.destroy(); singbox = null; ct?.destroy(); ct = null
+                stopCores()
                 val bi = bestW.first
                 Diag.log("авто: самый быстрый из проверенных — «${names.getOrElse(bi) { "?" }}» (${bestW.second} мс), возвращаемся к нему")
                 val again = runCatching { tryServer(configs[bi], assets, sbConfig = sbs.getOrElse(bi) { "" }, ctSpec = cts.getOrElse(bi) { "" }) }.getOrDefault(false)
@@ -207,6 +207,7 @@ class CoralVpnService : VpnService() {
         check(TProxyService.TProxyStartService(hev.path, fd.fd)) { "туннель hev не запустился" }
         Diag.log("шаг 6: туннель запущен, работает=${TProxyService.TProxyIsRunning()}")
         state.value = VpnState.ON
+        refreshLeakLevel(apps.count { it != packageName })
         message.value = "Подключено: $chosen"
         updateNotification("Защита включена · $chosen")
         lists = Lists(configs, names, keys, sbs, cts, assets)
@@ -224,9 +225,7 @@ class CoralVpnService : VpnService() {
         val order = (1..l.configs.size).map { (current + it) % l.configs.size }
         for (i in order) {
             if (gen != generation) return -2
-            xray?.destroy(); xray = null
-            singbox?.destroy(); singbox = null
-            ct?.destroy(); ct = null
+            stopCores()
             Diag.log("$tag: пробуем «${nameOf(l, i)}»")
             val ok = runCatching { tryServer(l.configs[i], l.assets, sbConfig = l.sbs.getOrElse(i) { "" }, ctSpec = l.cts.getOrElse(i) { "" }) }.getOrDefault(false)
             l.keys.getOrNull(i)?.let { NetProbe.report(this, it, ok, 0) }
@@ -403,7 +402,7 @@ class CoralVpnService : VpnService() {
         }.start()
         repeat(30) {
             if (!proc.isAlive) return false
-            if (runCatching { java.net.Socket("127.0.0.1", SingBoxConfig.CT2_PORT).use { true } }.getOrDefault(false)) return true
+            if (runCatching { java.net.Socket("127.0.0.1", SingBoxConfig.CT2_PORT).use { true } }.getOrDefault(false)) { Thread.sleep(150); return proc.isAlive }
             Thread.sleep(100)
         }
         return proc.isAlive
@@ -421,7 +420,7 @@ class CoralVpnService : VpnService() {
         }.start()
         repeat(40) {
             if (!proc.isAlive) return false
-            if (runCatching { java.net.Socket("127.0.0.1", SingBoxConfig.SOCKS_PORT).use { true } }.getOrDefault(false)) return true
+            if (runCatching { java.net.Socket("127.0.0.1", SingBoxConfig.SOCKS_PORT).use { true } }.getOrDefault(false)) { Thread.sleep(150); return proc.isAlive }
             Thread.sleep(100)
         }
         return proc.isAlive
@@ -478,17 +477,39 @@ class CoralVpnService : VpnService() {
         state.value = VpnState.ERROR
     }
 
+    /**
+     * Останавливает ядра и ЖДЁТ их выхода. Раньше destroy() не ждал: новый ct2/sing-box стартовал, пока старый ещё держал
+     * порт («address already in use»), проверка видела порт старого процесса как готовый, а потом он умирал — связь пропадала.
+     */
+    private fun stopCores() {
+        val ps = listOfNotNull(xray, singbox, ct)
+        xray = null; singbox = null; ct = null
+        ps.forEach { it.destroy() }
+        val end = System.currentTimeMillis() + 1500
+        ps.forEach { p ->
+            val left = (end - System.currentTimeMillis()).coerceAtLeast(50)
+            if (!runCatching { p.waitFor(left, java.util.concurrent.TimeUnit.MILLISECONDS) }.getOrDefault(true)) {
+                runCatching { p.destroyForcibly().waitFor(500, java.util.concurrent.TimeUnit.MILLISECONDS) }
+            }
+        }
+    }
+
     private fun shutdown() {
         generation++
         lists = null; currentIdx = -1; switching = false
         runCatching { TProxyService.TProxyStopService() }
-        xray?.destroy(); xray = null
-        singbox?.destroy(); singbox = null
-        ct?.destroy(); ct = null
+        stopCores()
         runCatching { tun?.close() }; tun = null
         if (state.value != VpnState.ERROR) state.value = VpnState.OFF
         stopForeground(STOP_FOREGROUND_REMOVE)
         stopSelf()
+    }
+
+    private fun refreshLeakLevel(bypassApps: Int) {
+        val on = if (Build.VERSION.SDK_INT >= 29) runCatching { isAlwaysOn }.getOrNull() else null
+        val lock = if (Build.VERSION.SDK_INT >= 29) runCatching { isLockdownEnabled }.getOrNull() else null
+        leakLevel.value = Leaks.level(on, lock)
+        Diag.log(Leaks.describe(on, lock, ipv6Routed = true, dnsInTunnel = true, bypassApps = bypassApps))
     }
 
     override fun onRevoke() = shutdown()

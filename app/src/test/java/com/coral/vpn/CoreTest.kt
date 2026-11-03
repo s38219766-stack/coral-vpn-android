@@ -401,4 +401,15 @@ class CoreTest {
         val fallback = AutoPick.order(listOf<Long?>(60, null), listOf(true, true), listOf(false, false), listOf(AutoPick.penaltyFor("ws"), 0L))
         assertEquals(listOf(0, 1), fallback)
     }
+
+    @Test fun leakLevelAndAdvice() {
+        assertEquals(Leaks.Level.OK, Leaks.level(true, true))
+        assertEquals(Leaks.Level.WARN_NOT_ALWAYS_ON, Leaks.level(false, false))
+        assertEquals(Leaks.Level.WARN_NO_LOCKDOWN, Leaks.level(true, false))
+        assertEquals(Leaks.Level.UNKNOWN, Leaks.level(null, null))
+        assertNull(Leaks.advice(Leaks.Level.OK))
+        assertNull(Leaks.advice(Leaks.Level.UNKNOWN))
+        assertNotNull(Leaks.advice(Leaks.Level.WARN_NO_LOCKDOWN))
+        assertTrue(Leaks.describe(true, false, true, true, 2).contains("блок-без-VPN=false"))
+    }
 }
