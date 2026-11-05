@@ -52,6 +52,35 @@ class CoralVpnService : VpnService() {
     @Volatile private var switching = false
     @Volatile private var lastProbeLog = 0L
     @Volatile private var generation = 0   // меняется при остановке, чтобы сторож связи прекратил работу
+    private var netCb: ConnectivityManager.NetworkCallback? = null
+
+    private fun netKind(cm: ConnectivityManager, n: android.net.Network): String {
+        val c = cm.getNetworkCapabilities(n)
+        return when {
+            c == null -> "?"
+            c.hasTransport(NetworkCapabilities.TRANSPORT_WIFI) -> "Wi-Fi"
+            c.hasTransport(NetworkCapabilities.TRANSPORT_CELLULAR) -> "мобильная"
+            c.hasTransport(NetworkCapabilities.TRANSPORT_VPN) -> "VPN"
+            else -> "другая"
+        }
+    }
+
+    /** Пишем в журнал смену сети (Wi-Fi ↔ мобильная, потеря сети): после неё чаще всего рвутся сеансы, и без этой записи причину не найти. */
+    private fun watchNetwork() {
+        if (netCb != null) return
+        val cm = getSystemService(ConnectivityManager::class.java) ?: return
+        val cb = object : ConnectivityManager.NetworkCallback() {
+            override fun onAvailable(network: android.net.Network) { Diag.log("сеть: доступна ${netKind(cm, network)}") }
+            override fun onLost(network: android.net.Network) { Diag.log("сеть: потеряна") }
+        }
+        runCatching { cm.registerDefaultNetworkCallback(cb); netCb = cb }
+    }
+
+    private fun unwatchNetwork() {
+        val cb = netCb ?: return
+        runCatching { getSystemService(ConnectivityManager::class.java)?.unregisterNetworkCallback(cb) }
+        netCb = null
+    }
 
     override fun onStartCommand(intent: Intent?, flags: Int, startId: Int): Int {
         if (intent?.action == ACTION_STOP) { shutdown(); return START_NOT_STICKY }
@@ -67,6 +96,7 @@ class CoralVpnService : VpnService() {
         val cts = intent.getStringArrayExtra(EXTRA_CT)?.toList().orEmpty()
         Diag.clear()
         Diag.log("onStartCommand, приложений в списке: ${apps.size}, режим: $appsMode")
+        watchNetwork()
         startForegroundCompat()
         state.value = VpnState.CONNECTING
         message.value = "Подключение…"
@@ -496,6 +526,7 @@ class CoralVpnService : VpnService() {
 
     private fun shutdown() {
         generation++
+        unwatchNetwork()
         lists = null; currentIdx = -1; switching = false
         runCatching { TProxyService.TProxyStopService() }
         stopCores()

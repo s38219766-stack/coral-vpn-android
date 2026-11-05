@@ -24,6 +24,22 @@ object Diag {
 
     fun clear() { runCatching { file?.writeText("") } }
 
+    // Важные события и сводка повторяющихся ошибок: «середина» журнала при копировании пропускается, а именно там чаще всего
+    // и случается обрыв (смена сети, потеря сеанса, переключение способа).
+    private val KEY = Regex("сторож|авто:|host (ok|fail)|рукопожатие|поток:|шаг 2|шаг 3|сервер «|проверка связи|CRASH|ct2:|ct:|сеть:|не отвечает|переключ")
+    private val NOISE = Regex("туннель за минуту|система: активная сеть|sing-box: .*ERROR")
+
+    private fun events(all: String): String {
+        val lines = all.lines()
+        val ev = lines.filter { KEY.containsMatchIn(it) && !NOISE.containsMatchIn(it) }.takeLast(70)
+        val errs = lines.filter { it.contains("ERROR") }
+        val groups = errs.groupBy { l -> l.substringAfter("connection:", l).replace(Regex("\\[[0-9;]*m|\\d{3,}|\\[.*?\\]"), "").trim().take(90) }
+        val sum = groups.entries.sortedByDescending { it.value.size }.take(6).joinToString("\n") { (k, v) ->
+            "${v.size}× с ${v.first().take(8)} по ${v.last().take(8)}: $k"
+        }
+        return (if (ev.isEmpty()) "(нет)" else ev.joinToString("\n")) + (if (sum.isEmpty()) "" else "\n-- повторяющиеся ошибки --\n$sum")
+    }
+
     fun report(): String {
         // Начало журнала (какой сервер выбран, как запускались ядра) и конец: середину с повторяющимися проверками отбрасываем
         val all = runCatching { file?.readText() }.getOrNull().orEmpty()
@@ -36,7 +52,7 @@ object Diag {
             val p = Runtime.getRuntime().exec(arrayOf("logcat", "-d", "-t", "120", "Coral:W", "*:S"))
             p.inputStream.bufferedReader().readText().takeLast(9000)
         }.getOrDefault("")
-        return "== Шаги ==\n$steps\n== Аварии ==\n$crash\n== Лог ==\n$sys"
+        return "== Шаги ==\n$steps\n== События ==\n${events(all)}\n== Аварии ==\n$crash\n== Лог ==\n$sys"
     }
 
     fun share(ctx: Context) {
