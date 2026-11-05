@@ -8,6 +8,7 @@ import (
 	"encoding/binary"
 	"errors"
 	"io"
+	"runtime"
 	"sync"
 	"time"
 
@@ -66,12 +67,27 @@ func (c *Config) rng() io.Reader {
 	return rand.Reader
 }
 
-func (c *Config) padder() Padder {
-	if c.Padder != nil {
-		return c.Padder
-	}
-	return DefaultPadder
+// Wipe затирает байты (ключи, буферы рукопожатия). Go не гарантирует очистку всей памяти (сборщик мусора и копирование стека),
+// поэтому это «затираем всё, до чего можем дотянуться», а не абсолютная гарантия.
+func Wipe(b []byte) {
+	clear(b)
+	runtime.KeepAlive(b)
 }
+
+// debugEph — только для тестов: получает срез эфемерного приватного ключа до затирания.
+var debugEph func([]byte)
+
+// wipeHandshake затирает эфемерный приватный ключ рукопожатия сразу после того, как из него выведены ключи сеанса.
+func wipeHandshake(hs *noise.HandshakeState) {
+	k := hs.LocalEphemeral().Private
+	if debugEph != nil {
+		debugEph(k)
+	}
+	Wipe(k)
+}
+
+// Wipe затирает статический приватный ключ в конфигурации: вызывайте при остановке процесса (пока он работает, ключ нужен для новых сеансов).
+func (c *Config) Wipe() { Wipe(c.Static.Private) }
 
 // replayCache помнит эфемерные ключи клиентов за окно времени: повтор рукопожатия отклоняется.
 type replayCache struct {
@@ -180,6 +196,9 @@ func (c *Config) reply(hs *noise.HandshakeState, padLen int, rnd4 []byte) (m2 []
 	binary.BigEndian.PutUint16(p2[2:4], uint16(padLen))
 	copy(p2[4:8], rnd4)
 	m2, cs0, cs1, err := hs.WriteMessage(nil, p2)
+	if err == nil {
+		wipeHandshake(hs)
+	}
 	if err != nil || len(m2) != msg2Len {
 		return nil, nil, nil, ErrHandshake
 	}
@@ -189,6 +208,9 @@ func (c *Config) reply(hs *noise.HandshakeState, padLen int, rnd4 []byte) (m2 []
 // finish разбирает сообщение 2 на клиенте и возвращает шифры (отправка, приём) и длину дополнения сервера.
 func finish(hs *noise.HandshakeState, m2 []byte) (send, recv *noise.CipherState, padLen int, err error) {
 	p2, cs0, cs1, err := hs.ReadMessage(nil, m2)
+	if err == nil {
+		wipeHandshake(hs) // ключи сеанса выведены, эфемерный секрет больше не нужен
+	}
 	if err != nil || len(p2) != payload2Len || p2[0] != Version {
 		return nil, nil, 0, ErrHandshake
 	}

@@ -3,8 +3,8 @@
 package main
 
 import (
+	"context"
 	"encoding/hex"
-	"encoding/json"
 	"flag"
 	"io"
 	"log"
@@ -18,62 +18,14 @@ import (
 	"coral/ct2"
 )
 
-type user struct {
-	Name string `json:"name"`
-	Pub  string `json:"pub"`
-}
-
-type store struct {
-	mu    sync.Mutex
-	mtime time.Time
-	set   atomic.Pointer[map[string]string]
-}
-
-func (s *store) load(path string) {
-	st, err := os.Stat(path)
-	if err != nil {
-		log.Printf("users: %v", err)
-		return
-	}
-	s.mu.Lock()
-	defer s.mu.Unlock()
-	if st.ModTime().Equal(s.mtime) {
-		return
-	}
-	b, err := os.ReadFile(path)
-	if err != nil {
-		log.Printf("users: %v", err)
-		return
-	}
-	var us []user
-	if err := json.Unmarshal(b, &us); err != nil {
-		log.Printf("users: разбор: %v (прежний список сохранён)", err)
-		return
-	}
-	m := map[string]string{}
-	for _, u := range us {
-		if p, err := hex.DecodeString(u.Pub); err == nil && len(p) == 32 {
-			m[string(p)] = u.Name
-		}
-	}
-	s.set.Store(&m)
-	s.mtime = st.ModTime()
-	log.Printf("users: загружено %d", len(m))
-}
-
-func (s *store) allowed(pub []byte) bool {
-	m := s.set.Load()
-	if m == nil {
-		return false
-	}
-	_, ok := (*m)[string(pub)]
-	return ok
-}
-
 func main() {
 	listen := flag.String("listen", ":9600", "адрес для приёма")
 	keyHex := flag.String("key", "", "приватный ключ сервера (hex) или переменная CT2_KEY")
-	usersPath := flag.String("users", "users.json", "файл со списком публичных ключей пользователей")
+	usersPath := flag.String("users", "users.json", "файл со списком публичных ключей пользователей (запасной источник)")
+	usersURL := flag.String("users-url", "", "адрес панели со списком ключей (https://…/api/ct2/users): узел сам забирает список, ручное копирование не нужно")
+	usersToken := flag.String("users-token", "", "токен для панели или переменная CT2_SYNC_TOKEN")
+	usersEvery := flag.Duration("users-interval", 30*time.Second, "как часто опрашивать панель")
+	usersCache := flag.String("users-cache", "", "файл кэша последнего хорошего списка (по умолчанию /var/lib/ct2/users.cache.json при -users-url)")
 	upstream := flag.String("upstream", "127.0.0.1:18388", "куда передавать расшифрованный трафик")
 	fallback := flag.String("fallback", "www.yandex.ru:443", "резервный сайт для чужих соединений")
 	sniList := flag.String("sni", "www.yandex.ru,ya.ru,dl.google.com,www.cloudflare.com", "имена, для которых проба идёт на сайт с тем же именем")
@@ -93,15 +45,39 @@ func main() {
 	if err != nil {
 		log.Fatal(err)
 	}
-	us := &store{}
-	us.load(*usersPath)
-	go func() {
-		for range time.Tick(10 * time.Second) {
-			us.load(*usersPath)
+	us := &ct2.UserList{}
+	if _, err := os.Stat(*usersPath); err == nil {
+		us.LoadFile(*usersPath)
+		go func() {
+			for range time.Tick(10 * time.Second) {
+				us.LoadFile(*usersPath)
+			}
+		}()
+	}
+	if *usersURL != "" {
+		tok := *usersToken
+		if tok == "" {
+			tok = os.Getenv("CT2_SYNC_TOKEN")
+		}
+		if tok == "" {
+			log.Fatal("для -users-url нужен токен: -users-token или CT2_SYNC_TOKEN")
+		}
+		cache := *usersCache
+		if cache == "" {
+			cache = "/var/lib/ct2/users.cache.json"
+		}
+		go us.Run(context.Background(), ct2.SyncConfig{URL: *usersURL, Token: tok, Interval: *usersEvery, CachePath: cache})
+	}
+
+	var reg ct2.Registry
+	go func() { // раз в 3 с закрываем сеансы пользователей, которых больше нет в списке (отзыв, истёкшая подписка)
+		for range time.Tick(3 * time.Second) {
+			if n := reg.Sweep(us.Allowed); n > 0 {
+				log.Printf("users: закрыто сеансов отозванных ключей: %d", n)
+			}
 		}
 	}()
-
-	cfg := &ct2.Config{Static: kp, Allowed: us.allowed, Limiter: ct2.NewLimiter(*rate, *burst, *maxHS)}
+	cfg := &ct2.Config{Static: kp, Allowed: us.Allowed, Limiter: ct2.NewLimiter(*rate, *burst, *maxHS)}
 	cfg.SetReplayCache(ct2.NewReplayCache())
 	allowSNI := map[string]bool{}
 	for _, n := range strings.Split(*sniList, ",") {
@@ -140,6 +116,7 @@ func main() {
 			ok.Add(1)
 			active.Add(1)
 			defer active.Add(-1)
+			defer reg.Add(cn)()
 			ct2.ServeMux(cn, func(st net.Conn) {
 				defer st.Close()
 				up, err := net.DialTimeout("tcp", *upstream, 5*time.Second)

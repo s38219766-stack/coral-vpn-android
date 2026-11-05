@@ -416,4 +416,6 @@ func (t *tlsFramer) Read(p []byte) (int, error) {
 
 func (t *tlsFramer) Close() error { return t.c.Close() }
 
+func (t *tlsFramer) SetWriteDeadline(d time.Time) error { return t.c.SetWriteDeadline(d) }
+
 var _ = crand.Reader

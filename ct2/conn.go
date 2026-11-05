@@ -4,6 +4,7 @@ import (
 	"errors"
 	"io"
 	"sync"
+	"time"
 
 	"github.com/flynn/noise"
 )
@@ -37,6 +38,7 @@ type Conn struct {
 	rw   io.ReadWriter
 	cfg  *Config
 	peer []byte
+	pad  Padder // политика дополнения этого сеанса (случайный профиль, если не задан в Config)
 
 	wmu    sync.Mutex
 	send   *noise.CipherState
@@ -53,7 +55,11 @@ func newConn(rw io.ReadWriter, send, recv *noise.CipherState, cfg *Config, peer 
 	if n == 0 {
 		n = defaultRek
 	}
-	return &Conn{rw: rw, cfg: cfg, peer: append([]byte{}, peer...), send: send, recv: recv, rekeyN: n}
+	pad := cfg.Padder
+	if pad == nil {
+		pad = NewRandomPadder(cfg.rng())
+	}
+	return &Conn{rw: rw, cfg: cfg, peer: append([]byte{}, peer...), pad: pad, send: send, recv: recv, rekeyN: n}
 }
 
 // PeerStatic — статический публичный ключ собеседника (для клиента это ключ сервера, для сервера — ключ пользователя).
@@ -62,7 +68,7 @@ func (c *Conn) PeerStatic() []byte { return c.peer }
 func (c *Conn) writeFrame(typ byte, data []byte) error {
 	pad := 0
 	if typ == frameData || typ == framePad {
-		pad = c.cfg.padder().Pad(len(data), c.cfg.rng())
+		pad = c.pad.Pad(len(data), c.cfg.rng())
 	}
 	body := make([]byte, frameHdr+len(data)+pad)
 	body[0] = typ
@@ -183,11 +189,16 @@ func (c *Conn) Read(p []byte) (int, error) {
 	return n, nil
 }
 
-// Close отправляет кадр завершения и закрывает нижележащий транспорт, если он умеет закрываться.
+// Close отправляет кадр завершения (не дольше 2 секунд и только если запись сейчас свободна) и закрывает нижележащий транспорт.
+// Зависший собеседник не должен задерживать закрытие: иначе очистка отозванных сеансов могла бы застрять на одном соединении.
 func (c *Conn) Close() error {
-	c.wmu.Lock()
-	c.writeFrame(frameClose, nil)
-	c.wmu.Unlock()
+	if c.wmu.TryLock() {
+		if d, ok := c.rw.(interface{ SetWriteDeadline(time.Time) error }); ok {
+			d.SetWriteDeadline(time.Now().Add(2 * time.Second))
+		}
+		c.writeFrame(frameClose, nil)
+		c.wmu.Unlock()
+	}
 	if cl, ok := c.rw.(io.Closer); ok {
 		return cl.Close()
 	}

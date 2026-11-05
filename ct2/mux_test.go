@@ -298,3 +298,115 @@ func TestMuxSurvivesGC(t *testing.T) {
 		t.Fatalf("server received %d bytes, want %d", n, int64(total)<<20)
 	}
 }
+
+// Сервер недоступен: пока идёт неудачная попытка соединения, остальные потоки не должны стоять в очереди (раньше каждый ждал
+// своей попытки под общей блокировкой), а после неудачи повторные попытки идут с паузой.
+func TestPoolFailedDialDoesNotStallOthers(t *testing.T) {
+	var dials atomic.Int32
+	p := &Pool{Size: 2, Dial: func() (*Conn, error) {
+		dials.Add(1)
+		time.Sleep(300 * time.Millisecond)
+		return nil, io.ErrUnexpectedEOF
+	}}
+	start := time.Now()
+	var wg sync.WaitGroup
+	for i := 0; i < 25; i++ {
+		wg.Add(1)
+		go func() {
+			defer wg.Done()
+			if _, err := p.Open(); err == nil {
+				t.Error("ожидали ошибку: сервер недоступен")
+			}
+		}()
+	}
+	wg.Wait()
+	if el := time.Since(start); el > 1500*time.Millisecond {
+		t.Fatalf("25 потоков ждали %v: очередь на одной попытке", el)
+	}
+	if d := dials.Load(); d > 3 {
+		t.Fatalf("25 потоков сделали %d попыток соединения, ожидали не больше 3", d)
+	}
+	// сразу после неудачи отказ мгновенный, без новой попытки
+	t0 := time.Now()
+	before := dials.Load()
+	if _, err := p.Open(); err == nil || time.Since(t0) > 100*time.Millisecond || dials.Load() != before {
+		t.Fatalf("после неудачи ожидали мгновенный отказ без новой попытки (ждали %v, попыток +%d)", time.Since(t0), dials.Load()-before)
+	}
+}
+
+// После восстановления сети сеанс создаётся заново, как только пройдёт пауза.
+func TestPoolRecoversAfterOutage(t *testing.T) {
+	cc, sc, _ := configs(t)
+	addr, _, stop := muxServer(t, sc, 0)
+	defer stop()
+	var down atomic.Bool
+	down.Store(true)
+	p := &Pool{Size: 1, Dial: func() (*Conn, error) {
+		if down.Load() {
+			return nil, io.ErrUnexpectedEOF
+		}
+		raw, err := net.Dial("tcp", addr)
+		if err != nil {
+			return nil, err
+		}
+		return DialTLS(raw, cc, "www.yandex.ru")
+	}}
+	defer p.Close()
+	if _, err := p.Open(); err == nil {
+		t.Fatal("в аварии ожидали ошибку")
+	}
+	down.Store(false)
+	deadline := time.Now().Add(5 * time.Second)
+	for {
+		st, err := p.Open()
+		if err == nil {
+			st.Write([]byte("ping"))
+			buf := make([]byte, 4)
+			if _, err := io.ReadFull(st, buf); err != nil || string(buf) != "ping" {
+				t.Fatalf("эхо после восстановления: %v %q", err, buf)
+			}
+			st.Close()
+			return
+		}
+		if time.Now().After(deadline) {
+			t.Fatalf("сеанс не восстановился за 5 с: %v", err)
+		}
+		time.Sleep(100 * time.Millisecond)
+	}
+}
+
+// Пока создаётся новый сеанс, потоки на уже живом сеансе не ждут.
+func TestPoolLiveSessionNotBlockedByDialing(t *testing.T) {
+	cc, sc, _ := configs(t)
+	addr, _, stop := muxServer(t, sc, 0)
+	defer stop()
+	var slow atomic.Bool
+	p := &Pool{Size: 2, Spread: 1, Dial: func() (*Conn, error) {
+		if slow.Load() {
+			time.Sleep(800 * time.Millisecond)
+		}
+		raw, err := net.Dial("tcp", addr)
+		if err != nil {
+			return nil, err
+		}
+		return DialTLS(raw, cc, "www.yandex.ru")
+	}}
+	defer p.Close()
+	first, err := p.Open() // живой сеанс с одним потоком; Spread=1 → следующий поток захочет второй сеанс
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer first.Close()
+	slow.Store(true)
+	go func() { p.Open() }() // запускает медленное создание второго сеанса
+	time.Sleep(100 * time.Millisecond)
+	t0 := time.Now()
+	st, err := p.Open() // идёт параллельно создаваемому: должен взять живой сеанс сразу
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer st.Close()
+	if el := time.Since(t0); el > 300*time.Millisecond {
+		t.Fatalf("поток на живом сеансе ждал %v, пока создаётся второй", el)
+	}
+}

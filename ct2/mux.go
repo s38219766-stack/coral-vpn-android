@@ -45,14 +45,30 @@ func ServeMux(c *Conn, handle func(net.Conn)) error {
 }
 
 // Pool держит несколько сеансов с сервером и раздаёт потоки по наименее загруженному. Сеанс, который умер, заменяется новым.
+// Новый сеанс создаётся БЕЗ удержания блокировки: пока идёт рукопожатие (до нескольких секунд при плохой сети), остальные
+// потоки продолжают работать на живых сеансах. Если сервер недоступен, повторные попытки идут с нарастающей паузой, а
+// ожидающие потоки сразу получают отказ: приложения быстро видят обрыв (и сторож переключает способ), а не стоят в очереди.
 type Pool struct {
 	Dial func() (*Conn, error) // создаёт новый сеанс (рукопожатие)
 	Size int                   // максимум сеансов (по умолчанию 2)
 	// Spread — при скольких потоках на самом свободном сеансе открывается ещё один (по умолчанию 16)
 	Spread int
 
-	mu       sync.Mutex
-	sessions []*smux.Session
+	mu        sync.Mutex
+	sessions  []*smux.Session
+	dialing   chan struct{} // не nil, пока идёт создание сеанса
+	fails     int           // подряд неудачных попыток
+	failUntil time.Time     // до этого момента новых попыток не делаем
+	lastErr   error
+}
+
+// retryPause — пауза после неудачной попытки: 1 с, 2 с, 4 с … не больше 15 с.
+func retryPause(fails int) time.Duration {
+	d := time.Second << uint(min(fails-1, 4))
+	if d > 15*time.Second {
+		d = 15 * time.Second
+	}
+	return d
 }
 
 func (p *Pool) prune() {
@@ -73,32 +89,76 @@ func (p *Pool) pick() (*smux.Session, error) {
 	if spread <= 0 {
 		spread = 16
 	}
-	p.mu.Lock()
-	defer p.mu.Unlock()
-	p.prune()
-	var best *smux.Session
-	for _, s := range p.sessions {
-		if best == nil || s.NumStreams() < best.NumStreams() {
-			best = s
+	for {
+		p.mu.Lock()
+		p.prune()
+		var best *smux.Session
+		for _, s := range p.sessions {
+			if best == nil || s.NumStreams() < best.NumStreams() {
+				best = s
+			}
 		}
-	}
-	if best != nil && (len(p.sessions) >= size || best.NumStreams() < spread) {
-		return best, nil
-	}
-	cn, err := p.Dial()
-	if err != nil {
-		if best != nil {
-			return best, nil // новый сеанс не вышел, работаем на имеющемся
+		if best != nil && (len(p.sessions) >= size || best.NumStreams() < spread) {
+			p.mu.Unlock()
+			return best, nil
 		}
-		return nil, err
+		// нужен новый сеанс
+		if time.Now().Before(p.failUntil) { // недавняя неудача: не ждём, работаем на имеющемся или сразу отказ
+			err := p.lastErr
+			p.mu.Unlock()
+			if best != nil {
+				return best, nil
+			}
+			return nil, err
+		}
+		if p.dialing != nil { // кто-то уже создаёт сеанс
+			ch := p.dialing
+			p.mu.Unlock()
+			if best != nil {
+				return best, nil // не ждём: берём живой
+			}
+			select {
+			case <-ch:
+				continue
+			case <-time.After(12 * time.Second):
+				return nil, errors.New("ct2: connect timeout")
+			}
+		}
+		ch := make(chan struct{})
+		p.dialing = ch
+		p.mu.Unlock()
+
+		cn, err := p.Dial() // без блокировки
+		var s *smux.Session
+		if err == nil {
+			s, err = smux.Client(cn, muxConfig())
+			if err != nil {
+				cn.Close()
+			}
+		}
+		p.mu.Lock()
+		p.dialing = nil
+		close(ch)
+		if err != nil {
+			p.fails++
+			p.lastErr = err
+			p.failUntil = time.Now().Add(retryPause(p.fails))
+			p.prune()
+			var live *smux.Session
+			if len(p.sessions) > 0 {
+				live = p.sessions[0]
+			}
+			p.mu.Unlock()
+			if live != nil {
+				return live, nil
+			}
+			return nil, err
+		}
+		p.fails, p.lastErr, p.failUntil = 0, nil, time.Time{}
+		p.sessions = append(p.sessions, s)
+		p.mu.Unlock()
+		return s, nil
 	}
-	s, err := smux.Client(cn, muxConfig())
-	if err != nil {
-		cn.Close()
-		return nil, err
-	}
-	p.sessions = append(p.sessions, s)
-	return s, nil
 }
 
 // Open открывает новый поток; при мёртвом сеансе один раз пробует заново на другом.
