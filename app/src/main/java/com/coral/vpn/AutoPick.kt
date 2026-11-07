@@ -77,16 +77,20 @@ object AutoPick {
         return rtt.indices.sortedWith(compareBy<Int>({ key(it) }, { it }))
     }
 
-    /** Замер всех серверов параллельно, не дольше ~3,5 с. */
+    /** Замер всех серверов параллельно: общий дедлайн ~3 с на весь замер (раньше каждому потоку давали по 3,5 с подряд, и «мёртвые» способы складывали ожидание до 10 с). */
     fun measure(endpoints: List<Pair<String, Int>?>): List<Long?> {
         val out = arrayOfNulls<Long>(endpoints.size)
         val threads = endpoints.indices.map { i ->
             Thread {
                 val e = endpoints[i]
-                if (e != null) out[i] = tcpRtt(e.first, e.second)
-            }.also { it.start() }
+                if (e != null) { val r = tcpRtt(e.first, e.second); synchronized(out) { out[i] = r } }
+            }.also { it.isDaemon = true; it.start() }
         }
-        threads.forEach { try { it.join(3500) } catch (e: InterruptedException) { /* ничего */ } }
-        return out.toList()
+        val deadline = System.nanoTime() + 3_000_000_000L
+        threads.forEach {
+            val left = (deadline - System.nanoTime()) / 1_000_000
+            if (left > 0) try { it.join(left) } catch (e: InterruptedException) { /* ничего */ }
+        }
+        return synchronized(out) { out.toList() }
     }
 }
